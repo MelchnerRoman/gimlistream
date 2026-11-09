@@ -694,7 +694,14 @@ mod tests {
                 stream.extend_from_slice(chunk);
                 if let Some(cut) = super::last_start_code(&stream).filter(|&c| c > 0) {
                     out.extend(stream.drain(..cut));
+                    // The piece just drained ends right before a start code.
+                    assert!(stream.starts_with(&[0, 0, 1]), "cut at {cut}, split {split}");
                 }
+                // Remainder starts at a start code, or is empty / a partial one.
+                assert!(
+                    stream.starts_with(&[0, 0, 1]) || [0, 0, 1].starts_with(&stream),
+                    "remainder {stream:?}, split {split}"
+                );
             }
             out.extend(&stream);
             assert_eq!(out, data, "split at {split}");
