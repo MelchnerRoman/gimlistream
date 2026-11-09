@@ -23,7 +23,7 @@ bundle.sh                         macOS universal .app -> dist/Gimlistream.zip
 bundle-windows.sh                 cross-build x86_64-pc-windows-gnu -> dist/Gimlistream-windows.zip (bundles pinned zadig.exe + README)
 bundle-android.sh                 gradle assembleRelease -> dist/Gimlistream.apk
 android/
-  build.gradle.kts                applicationId com.gimlistream, minSdk 26, targetSdk/compileSdk 37, versionCode 4
+  build.gradle.kts                applicationId com.gimlistream, minSdk 26, targetSdk/compileSdk 37, versionName/versionCode read from Cargo.toml
   src/main/java/com/gimlistream/
     MainActivity.java             USB worker thread, MediaCodec decode to SurfaceView, recording (~410 lines)
     NalSplitter.java              Annex B NAL splitter, plain Java, self-check in main()
@@ -79,7 +79,7 @@ docs/TEAM_NOTES.md                this file
 
 ## Observations (for planning, not yet changed)
 
-1. The version `0.4.0` is hard-coded in three places: `Cargo.toml`, the `Info.plist` heredoc in `bundle.sh`, and `android/build.gradle.kts` (`versionName`, plus `versionCode = 4`, which is separate). Keep them in step when releasing.
+1. The version has a single source, `Cargo.toml` (`version = "0.4.0"`). `bundle.sh` reads it for `CFBundleShortVersionString`, and `android/build.gradle.kts` parses it for `versionName` and derives `versionCode` as major*10000 + minor*100 + patch (0.4.0 gives 4). To release a new version, change only `Cargo.toml`; `Cargo.lock` follows on the next cargo build.
 2. CI runs both `cargo test` and the Android `NalSplitter` self-check (added to `build.yml`). The Android side is still a plain `main()`, not JUnit.
 3. Android release builds are signed with the debug key (marked `ponytail:` in `build.gradle.kts`). The macOS build is ad-hoc signed (also marked `ponytail:`). Both mean installers show security warnings; the README tells users how to get past them.
 4. `main.rs` is a single 715-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
