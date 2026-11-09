@@ -89,4 +89,4 @@ docs/TEAM_NOTES.md                this file
 
 - Read every source, script, workflow and build file listed above.
 - Ran `cargo test` (5 passed, 0 failed) and `cargo build --release` (success) in T40, with no warnings or errors. See Observation 5.
-- Did not run the bundle scripts, the Android build, or the Android `NalSplitter` self-check; those remain unverified. The commands above are taken from the README, the scripts and CI.
+- Did not run the bundle scripts or the Android build; those remain unverified. The Android `NalSplitter` self-check cannot be run by agents (no javac/java in their shell); the Android job in `build.yml` runs it and is the source of truth. The commands above are taken from the README, the scripts and CI.
