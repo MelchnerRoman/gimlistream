@@ -411,7 +411,7 @@ fn diagnostics(status: &str) -> String {
             Ok(o) => {
                 let mut any = false;
                 for line in String::from_utf8_lossy(&o.stdout).lines() {
-                    let l = line.trim_start_matches(|c: char| c == ' ' || c == '|');
+                    let l = line.trim_start_matches([' ', '|']);
                     let keep = l.starts_with("+-o ")
                         || ["\"idVendor\"", "\"idProduct\"", "\"USB Product Name\""]
                             .iter()
