@@ -74,13 +74,13 @@ docs/TEAM_NOTES.md                this file
   ```sh
   cd android/src/main/java && javac com/gimlistream/NalSplitter.java -d /tmp/nal-out && java -ea -cp /tmp/nal-out com.gimlistream.NalSplitter
   ```
-  It prints `NalSplitter ok` on success. It is not run in CI.
+  It prints `NalSplitter ok` on success. CI runs it in the Android job of `build.yml`, before `bundle-android.sh`.
 - There is no hardware-free test for USB, decoding, or recording. Verify with real goggles (or Diagnostics output) on each platform.
 
 ## Observations (for planning, not yet changed)
 
 1. The version `0.4.0` is hard-coded in three places: `Cargo.toml`, the `Info.plist` heredoc in `bundle.sh`, and `android/build.gradle.kts` (`versionName`, plus `versionCode = 4`, which is separate). Keep them in step when releasing.
-2. CI runs `cargo test` but not the Android `NalSplitter` self-check.
+2. CI runs both `cargo test` and the Android `NalSplitter` self-check (added to `build.yml`). The Android side is still a plain `main()`, not JUnit.
 3. Android release builds are signed with the debug key (marked `ponytail:` in `build.gradle.kts`). The macOS build is ad-hoc signed (also marked `ponytail:`). Both mean installers show security warnings; the README tells users how to get past them.
 4. `main.rs` is a single 715-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
 5. Tests in this worktree were not run while writing these notes (see below).
