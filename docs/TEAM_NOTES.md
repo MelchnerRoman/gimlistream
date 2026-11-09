@@ -16,7 +16,7 @@ Assets are generated once and committed: `assets/AppIcon.icns`, `assets/icon.ico
 ## Structure
 
 ```
-src/main.rs                       whole desktop app (~715 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
+src/main.rs                       whole desktop app (~754 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
 build.rs                          Windows only: embeds assets/icon.ico via windres
 Cargo.toml / Cargo.lock          single package "gimlistream" 0.4.0
 bundle.sh                         macOS universal .app -> dist/Gimlistream.zip
@@ -69,7 +69,7 @@ docs/TEAM_NOTES.md                this file
 
 ## How to test
 
-- Desktop unit tests: `cargo test`. Covers `last_start_code`, `start_codes`, `menu_button` hit-testing, and the watermark blend. These run in CI on every push and PR.
+- Desktop unit tests: `cargo test`. Covers `last_start_code`, `start_codes`, `menu_button` hit-testing, the watermark blend, and the Annex B handling (`split_handles_chunk_boundaries`, `keeps_latest_sps_pps` exercising `keep_sps_pps`). These run in CI on every push and PR.
 - Android: the `NalSplitter` self-check is a plain `main()`, not a JUnit test. Run it with:
   ```sh
   cd android/src/main/java && javac com/gimlistream/NalSplitter.java -d /tmp/nal-out && java -ea -cp /tmp/nal-out com.gimlistream.NalSplitter
@@ -82,7 +82,7 @@ docs/TEAM_NOTES.md                this file
 1. The version has a single source, `Cargo.toml` (`version = "0.4.0"`). `bundle.sh` reads it for `CFBundleShortVersionString`, and `android/build.gradle.kts` parses it for `versionName` and derives `versionCode` as major*10000 + minor*100 + patch (0.4.0 gives 400, replacing the earlier hard-coded 4). To release a new version, change only `Cargo.toml` (plus the "Current version" header at the top of this file, which is updated by hand); `Cargo.lock` follows on the next cargo build.
 2. CI runs both `cargo test` and the Android `NalSplitter` self-check (added to `build.yml`). The Android side is still a plain `main()`, not JUnit.
 3. Android release builds are signed with the debug key (marked `ponytail:` in `build.gradle.kts`). The macOS build is ad-hoc signed (also marked `ponytail:`). Both mean installers show security warnings; the README tells users how to get past them.
-4. `main.rs` is a single 715-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
+4. `main.rs` is a single 754-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
 5. Tests in this worktree were not run while writing these notes (see below).
 
 ## Verification status of these notes
