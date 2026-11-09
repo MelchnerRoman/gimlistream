@@ -116,6 +116,16 @@ fn last_start_code(buf: &[u8]) -> Option<usize> {
     buf.windows(3).rposition(|w| w == [0, 0, 1])
 }
 
+/// Same limit as NalSplitter.MAX_BUFFER on Android.
+const MAX_STREAM_BUF: usize = 8 << 20;
+
+/// Drops `buf` if it grew past MAX_STREAM_BUF without ever yielding a start code.
+fn cap_stream(buf: &mut Vec<u8>) {
+    if buf.len() > MAX_STREAM_BUF {
+        buf.clear();
+    }
+}
+
 /// Remembers the most recent SPS (type 7) and PPS (type 8) NALs in `buf`.
 fn keep_sps_pps(buf: &[u8], sps: &mut Vec<u8>, pps: &mut Vec<u8>) {
     let starts = start_codes(buf);
@@ -612,6 +622,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         }
 
         let Some(cut) = last_start_code(&stream).filter(|&c| c > 0) else {
+            cap_stream(&mut stream);
             continue;
         };
         let complete: Vec<u8> = stream.drain(..cut).collect();
@@ -677,6 +688,16 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn caps_stream_without_start_code() {
+        let mut buf = vec![7u8; super::MAX_STREAM_BUF];
+        super::cap_stream(&mut buf);
+        assert_eq!(buf.len(), super::MAX_STREAM_BUF);
+        buf.push(7);
+        super::cap_stream(&mut buf);
+        assert!(buf.is_empty());
+    }
+
     #[test]
     fn splits_at_last_start_code() {
         let buf = [0, 0, 0, 1, 0x67, 9, 0, 0, 1, 0x68, 7];
