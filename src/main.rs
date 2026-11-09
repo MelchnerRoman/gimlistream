@@ -777,6 +777,25 @@ mod tests {
     }
 
     #[test]
+    fn menu_button_edges() {
+        assert_eq!(super::menu_button(80.0, 500.0), Some(0), "top-left inclusive");
+        assert_eq!(super::menu_button(280.0, 550.0), None, "right edge exclusive");
+        assert_eq!(super::menu_button(1000.0, 600.0), None, "bottom edge exclusive");
+        assert_eq!(super::menu_button(1200.0, 550.0), None, "right of last button");
+    }
+
+    #[test]
+    fn rec_dot_is_drawn_in_corner_only() {
+        let (w, h) = (100, 100);
+        let mut frame = vec![0u32; w * h];
+        super::draw_rec_dot(&mut frame, w, h);
+        assert_eq!(frame[32 * w + 32], 0x00ff_2020, "center is red");
+        assert_eq!(frame[32 * w + 32 + 13], 0, "outside radius untouched");
+        assert!(frame.iter().filter(|&&p| p != 0).count() > 400);
+        super::draw_rec_dot(&mut [0; 100], 10, 10); // too small: no panic
+    }
+
+    #[test]
     fn watermark_blends_into_bottom_right() {
         use super::{draw_watermark, WM_MARGIN, WM_SIZE};
         let (w, h) = (1280, 720);
