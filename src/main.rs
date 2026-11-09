@@ -116,6 +116,19 @@ fn last_start_code(buf: &[u8]) -> Option<usize> {
     buf.windows(3).rposition(|w| w == [0, 0, 1])
 }
 
+/// Remembers the most recent SPS (type 7) and PPS (type 8) NALs in `buf`.
+fn keep_sps_pps(buf: &[u8], sps: &mut Vec<u8>, pps: &mut Vec<u8>) {
+    let starts = start_codes(buf);
+    for (i, &s) in starts.iter().enumerate() {
+        let nal = &buf[s..*starts.get(i + 1).unwrap_or(&buf.len())];
+        match nal.get(3).map(|t| t & 0x1f) {
+            Some(7) => *sps = nal.to_vec(),
+            Some(8) => *pps = nal.to_vec(),
+            _ => {}
+        }
+    }
+}
+
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Res<()> {
@@ -603,15 +616,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         };
         let complete: Vec<u8> = stream.drain(..cut).collect();
 
-        let starts = start_codes(&complete);
-        for (i, &s) in starts.iter().enumerate() {
-            let nal = &complete[s..*starts.get(i + 1).unwrap_or(&complete.len())];
-            match nal.get(3).map(|t| t & 0x1f) {
-                Some(7) => sps = nal.to_vec(),
-                Some(8) => pps = nal.to_vec(),
-                _ => {}
-            }
-        }
+        keep_sps_pps(&complete, &mut sps, &mut pps);
         if app.recording != rec.is_some() {
             match rec.take() {
                 Some((mut f, path)) => {
@@ -677,6 +682,33 @@ mod tests {
         let buf = [0, 0, 0, 1, 0x67, 9, 0, 0, 1, 0x68, 7];
         assert_eq!(super::last_start_code(&buf), Some(6));
         assert_eq!(super::last_start_code(&[1, 2, 3]), None);
+    }
+
+    #[test]
+    fn split_handles_chunk_boundaries() {
+        // Same cut logic as stream(): only drain up to the last start code.
+        let data = [0, 0, 1, 0x67, 1, 2, 0, 0, 1, 0x68, 3, 0, 0, 1, 0x65, 4];
+        for split in 0..=data.len() {
+            let (mut stream, mut out) = (Vec::new(), Vec::new());
+            for chunk in [&data[..split], &data[split..]] {
+                stream.extend_from_slice(chunk);
+                if let Some(cut) = super::last_start_code(&stream).filter(|&c| c > 0) {
+                    out.extend(stream.drain(..cut));
+                }
+            }
+            out.extend(&stream);
+            assert_eq!(out, data, "split at {split}");
+        }
+    }
+
+    #[test]
+    fn keeps_latest_sps_pps() {
+        let (mut sps, mut pps) = (Vec::new(), Vec::new());
+        super::keep_sps_pps(&[0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 0, 0, 1, 0x65, 9], &mut sps, &mut pps);
+        assert_eq!((&sps[..], &pps[..]), (&[0, 0, 1, 0x67, 1][..], &[0, 0, 1, 0x68, 2][..]));
+        super::keep_sps_pps(&[0, 0, 1, 0x67, 5, 0, 0, 1, 0x41, 9], &mut sps, &mut pps);
+        assert_eq!(sps, [0, 0, 1, 0x67, 5], "newer SPS replaces old");
+        assert_eq!(pps, [0, 0, 1, 0x68, 2], "PPS kept when absent");
     }
 
     #[test]
