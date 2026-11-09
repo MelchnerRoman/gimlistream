@@ -6,6 +6,7 @@ export MACOSX_DEPLOYMENT_TARGET=11.0
 cargo build --release --target aarch64-apple-darwin
 cargo build --release --target x86_64-apple-darwin
 
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1) # Cargo.toml is the single version source
 APP=dist/Gimlistream.app
 rm -rf "$APP" dist/Gimlistream.zip && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 lipo -create -output "$APP/Contents/MacOS/gimlistream" \
@@ -22,7 +23,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleExecutable</key><string>gimlistream</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.4.0</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

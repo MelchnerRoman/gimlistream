@@ -10,8 +10,10 @@ android {
         applicationId = "com.gimlistream"
         minSdk = 26 // Android 8: adaptive icon only, no legacy PNGs
         targetSdk = 37 // Android 17
-        versionCode = 4
-        versionName = "0.4.0"
+        // Single source of truth: ../Cargo.toml. versionCode = major*10000 + minor*100 + patch.
+        val v = Regex("""(?m)^version = "(\d+)\.(\d+)\.(\d+)"""").find(file("../Cargo.toml").readText())!!.groupValues
+        versionCode = v[1].toInt() * 10000 + v[2].toInt() * 100 + v[3].toInt()
+        versionName = "${v[1]}.${v[2]}.${v[3]}"
     }
 
     buildTypes {
