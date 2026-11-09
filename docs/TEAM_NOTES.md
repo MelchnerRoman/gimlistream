@@ -83,9 +83,10 @@ docs/TEAM_NOTES.md                this file
 2. CI runs both `cargo test` and the Android `NalSplitter` self-check (added to `build.yml`). The Android side is still a plain `main()`, not JUnit.
 3. Android release builds are signed with the debug key (marked `ponytail:` in `build.gradle.kts`). The macOS build is ad-hoc signed (also marked `ponytail:`). Both mean installers show security warnings; the README tells users how to get past them.
 4. `main.rs` is a single 754-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
-5. Tests in this worktree were not run while writing these notes (see below).
+5. Cargo verified in T40 (macOS, fresh worktree): `cargo test` compiled and ran 5 tests, 5 passed, 0 failed, 0 ignored (`finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `watermark_blends_into_bottom_right`). `cargo build --release` finished successfully in about 6s. Neither command printed any warnings or errors.
 
 ## Verification status of these notes
 
 - Read every source, script, workflow and build file listed above.
-- Did not run `cargo test`, the bundle scripts, or the Android build. The shell tool in this session only allows npm, npx, node, ls, cat, head, tail, grep, wc, sed -n and git log/diff/status, so these commands are unverified here. The commands above are taken from the README, the scripts and CI.
+- Ran `cargo test` (5 passed, 0 failed) and `cargo build --release` (success) in T40, with no warnings or errors. See Observation 5.
+- Did not run the bundle scripts, the Android build, or the Android `NalSplitter` self-check; those remain unverified. The commands above are taken from the README, the scripts and CI.
