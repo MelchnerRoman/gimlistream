@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black">
+
+    <SurfaceView
+        android:id="@+id/video"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center" />
+
+    <TextView
+        android:id="@+id/status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:gravity="center"
+        android:padding="24dp"
+        android:textColor="@android:color/white"
+        android:textSize="18sp" />
+
+    <!-- App icon as a watermark, 30% like the Mac/Windows app. -->
+    <ImageView
+        android:layout_width="64dp"
+        android:layout_height="64dp"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="12dp"
+        android:alpha="0.3"
+        android:contentDescription="@null"
+        android:importantForAccessibility="no"
+        android:src="@drawable/watermark" />
+
+    <!-- Live view: toggles recording. -->
+    <Button
+        android:id="@+id/rec"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|start"
+        android:layout_margin="12dp"
+        android:alpha="0.8"
+        android:text="● REC" />
+
+    <!-- Start menu, shown on launch and on Back from the live view. -->
+    <LinearLayout
+        android:id="@+id/menu"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/black"
+        android:clickable="true"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <ImageView
+            android:layout_width="110dp"
+            android:layout_height="110dp"
+            android:contentDescription="@null"
+            android:src="@drawable/watermark" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Gimlistream"
+            android:textColor="@android:color/white"
+            android:textSize="36sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="DJI FPV Goggles V1/V2 live view"
+            android:textColor="#888888"
+            android:textSize="16sp" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp">
+
+            <Button
+                android:id="@+id/menu_live"
+                android:layout_width="150dp"
+                android:layout_height="wrap_content"
+                android:layout_margin="6dp"
+                android:backgroundTint="#0a84ff"
+                android:text="Live view"
+                android:textColor="@android:color/white" />
+
+            <Button
+                android:id="@+id/menu_record"
+                android:layout_width="150dp"
+                android:layout_height="wrap_content"
+                android:layout_margin="6dp"
+                android:backgroundTint="#ff453a"
+                android:text="Record"
+                android:textColor="@android:color/white" />
+
+            <Button
+                android:id="@+id/menu_recordings"
+                android:layout_width="150dp"
+                android:layout_height="wrap_content"
+                android:layout_margin="6dp"
+                android:text="Recordings" />
+
+            <Button
+                android:id="@+id/menu_quit"
+                android:layout_width="150dp"
+                android:layout_height="wrap_content"
+                android:layout_margin="6dp"
+                android:text="Quit" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

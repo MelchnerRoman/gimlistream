@@ -1,0 +1,12 @@
+[package]
+name = "gimlistream"
+version = "0.4.0"
+edition = "2021"
+
+[dependencies]
+rusb = { version = "0.9", features = ["vendored"] }
+openh264 = "0.6"
+minifb = "0.27"
+
+[profile.release]
+opt-level = 3
