@@ -226,15 +226,8 @@ impl App {
     /// Live view: find the goggles and stream, retrying, until Esc goes back to the menu.
     fn live(&mut self) {
         while self.watching() {
-            let handle = match find_goggles().and_then(|h| match h {
-                Some(h) => {
-                    let _ = h.set_auto_detach_kernel_driver(true);
-                    h.claim_interface(IFACE)?;
-                    Ok(Some(h))
-                }
-                None => Ok(None),
-            }) {
-                Ok(Some(h)) => h,
+            let dev = match find_goggles() {
+                Ok(Some(d)) => d,
                 Ok(None) => {
                     self.set_status(
                         "waiting for goggles (use a USB-C to USB-A adapter, not a C-to-C cable)",
@@ -242,6 +235,14 @@ impl App {
                     self.idle(Duration::from_secs(1));
                     continue;
                 }
+                Err(e) => {
+                    self.set_status(&format!("couldn't list USB devices: {e}"));
+                    self.idle(Duration::from_secs(1));
+                    continue;
+                }
+            };
+            let handle = match open_goggles(&dev) {
+                Ok(h) => h,
                 Err(e) => {
                     self.set_status(&format!("found goggles but can't open them: {e}"));
                     #[cfg(windows)]
@@ -318,15 +319,25 @@ impl App {
     }
 }
 
-/// Like rusb::open_device_with_vid_pid, but reports why opening failed instead of hiding it.
-fn find_goggles() -> Res<Option<rusb::DeviceHandle<rusb::GlobalContext>>> {
+/// Enumerate USB devices and return the goggles, unopened. Errors here are enumeration
+/// failures; opening is left to the caller so the two can be reported separately.
+fn find_goggles() -> Res<Option<rusb::Device<rusb::GlobalContext>>> {
     for dev in rusb::devices()?.iter() {
         let d = dev.device_descriptor()?;
         if d.vendor_id() == VENDOR_ID && d.product_id() == PRODUCT_ID {
-            return Ok(Some(dev.open()?));
+            return Ok(Some(dev));
         }
     }
     Ok(None)
+}
+
+fn open_goggles(
+    dev: &rusb::Device<rusb::GlobalContext>,
+) -> Res<rusb::DeviceHandle<rusb::GlobalContext>> {
+    let h = dev.open()?;
+    let _ = h.set_auto_detach_kernel_driver(true);
+    h.claim_interface(IFACE)?;
+    Ok(h)
 }
 
 static LOG: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -695,7 +706,10 @@ mod tests {
                 if let Some(cut) = super::last_start_code(&stream).filter(|&c| c > 0) {
                     out.extend(stream.drain(..cut));
                     // The piece just drained ends right before a start code.
-                    assert!(stream.starts_with(&[0, 0, 1]), "cut at {cut}, split {split}");
+                    assert!(
+                        stream.starts_with(&[0, 0, 1]),
+                        "cut at {cut}, split {split}"
+                    );
                 }
                 // Remainder starts at a start code, or is empty / a partial one.
                 assert!(
@@ -711,8 +725,15 @@ mod tests {
     #[test]
     fn keeps_latest_sps_pps() {
         let (mut sps, mut pps) = (Vec::new(), Vec::new());
-        super::keep_sps_pps(&[0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 0, 0, 1, 0x65, 9], &mut sps, &mut pps);
-        assert_eq!((&sps[..], &pps[..]), (&[0, 0, 1, 0x67, 1][..], &[0, 0, 1, 0x68, 2][..]));
+        super::keep_sps_pps(
+            &[0, 0, 1, 0x67, 1, 0, 0, 1, 0x68, 2, 0, 0, 1, 0x65, 9],
+            &mut sps,
+            &mut pps,
+        );
+        assert_eq!(
+            (&sps[..], &pps[..]),
+            (&[0, 0, 1, 0x67, 1][..], &[0, 0, 1, 0x68, 2][..])
+        );
         super::keep_sps_pps(&[0, 0, 1, 0x67, 5, 0, 0, 1, 0x41, 9], &mut sps, &mut pps);
         assert_eq!(sps, [0, 0, 1, 0x67, 5], "newer SPS replaces old");
         assert_eq!(pps, [0, 0, 1, 0x68, 2], "PPS kept when absent");
