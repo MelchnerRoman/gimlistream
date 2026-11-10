@@ -165,3 +165,7 @@ Follow-ups: finding 2 (sps/pps reset) was applied in T157; the on-device lifecyc
 `MainActivity.stream()` now clears the parameter sets for every new connection, so a new recording never starts with the previous goggles' SPS/PPS. Not compiled or run here.
 
 Note: the reset appears twice in `stream()` (`sps = pps = null;` at the top, and `sps = null; pps = null;` after `openDevice`). Both came from parallel merges (T157 and T160). Behaviour is the same; one of them can be deleted in a later cleanup.
+
+## T167/T168: responsive idle sleep (Android)
+
+The idle "no goggles" sleep in `MainActivity.loop()` now exits promptly on pause (10 x 100 ms, checks `running`). T168 verifies this. The 2 s `bulkTransfer` pokes can still delay exit.
