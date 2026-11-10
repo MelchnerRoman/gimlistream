@@ -116,6 +116,15 @@ Scope: `MainActivity.java` worker/`stream()`/`record()`/`drain()`, and `src/main
 
 Ruled out (checked, no change proposed): the `stream()` poke/retry paths and the desktop `write_bulk` poke error (covered by T94 and T106); the Android `onPause` join (bounded at 1 s); the Android `queue()` drop when the decoder is busy (documented as a deliberate trade-off in the code); the Android `NalSplitter` 3-byte start-code assumption in `record()`/`queue()` (matches `NalSplitter`'s output, checked in the source).
 
+## Needs human verification
+
+Agent shells can't run gradle or adb, so these have never been run by agents:
+
+- `gradle --no-daemon -p android testDebugUnitTest` (NalSplitterTest, including the T121 overflow test once re-added in T139) and `gradle :android:assembleDebug`.
+- On-device check of the T124 in-place resize re-fit (split-screen/freeform resize should re-letterbox the video).
+
+The CI Android unit-test step is the only automated check.
+
 ## Verification status of these notes
 
 - Read every source, script, workflow and build file listed above.
