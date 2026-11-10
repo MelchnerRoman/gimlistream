@@ -16,7 +16,7 @@ Assets are generated once and committed: `assets/AppIcon.icns`, `assets/icon.ico
 ## Structure
 
 ```
-src/main.rs                       whole desktop app (946 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
+src/main.rs                       whole desktop app (972 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
 build.rs                          Windows only: embeds assets/icon.ico via windres
 Cargo.toml / Cargo.lock          single package "gimlistream" 0.4.0
 bundle.sh                         macOS universal .app -> dist/Gimlistream.zip
@@ -108,7 +108,7 @@ Recording helpers (T193): the file-naming/collision logic moved out of `MainActi
 1. The version has a single source, `Cargo.toml` (`version = "0.4.0"`). `bundle.sh` reads it for `CFBundleShortVersionString`, and `android/build.gradle.kts` parses it for `versionName` and derives `versionCode` as major*10000 + minor*100 + patch (0.4.0 gives 400, replacing the earlier hard-coded 4). To release a new version, change only `Cargo.toml` (plus the "Current version" header at the top of this file, which is updated by hand); `Cargo.lock` follows on the next cargo build.
 2. CI runs `cargo test`, the Android JUnit test (`gradle ... testDebugUnitTest`) and the `NalSplitter` `main()` self-check, all in `build.yml`.
 3. Android release builds are signed with the debug key (marked `ponytail:` in `build.gradle.kts`). The macOS build is ad-hoc signed (also marked `ponytail:`). Both verified in T51. Both mean installers show security warnings. The README covers them (T54): Mac Gatekeeper (right-click → Open, described as ad-hoc signed), Android unknown-sources and Play Protect prompts, and Windows SmartScreen (More info → Run anyway).
-4. `main.rs` is a single 946-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
+4. `main.rs` is a single 972-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
 5. Cargo verified in T209 (macOS): `cargo test` ran 12 tests, 12 passed, 0 failed; `cargo clippy --all-targets` is clean. The set is the T91 ten plus `finds_idr_offset` (T182) and `finish_recording_flushes_buffered_tail` (T209). `cargo test` last ran clean (11/11) in T204, and `cargo clippy` was last run before T209 in T186 with no warnings or errors. T91: `cargo test` ran 10 tests, 10 passed, 0 failed, 0 ignored (`capped_stream_stays_bounded_and_recovers`, `finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `menu_button_edges`, `read_actions`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `rec_dot_is_drawn_in_corner_only`, `caps_stream_without_start_code`, `watermark_blends_into_bottom_right`). `cargo build --release` re-verified in T209 (success, about 6s; first in T40). Neither command printed any warnings or errors. `cargo clippy` (T49): clean, 0 warnings.
 
 ### Desktop unplug / replug review (T94)
@@ -161,7 +161,7 @@ The CI Android unit-test step is the only automated check.
 Scope: `MainActivity.java` (`onCreate`, `onResume`, `onPause`, `startWorker`, `loop`, `stream`, `record`, `stopRecording`) and `AndroidManifest.xml`. Nothing compiled or run on a device.
 
 Facts from the code:
-- There is no USB-detached broadcast receiver, and no `BroadcastReceiver` of any kind. The USB permission result is polled, not received (comment at line 226). `grep` for `Receiver`, `registerReceiver`, `DETACHED`, `onDestroy`, `onStop`, `onNewIntent` finds nothing. So there is nothing to unregister.
+- There is no USB-detached broadcast receiver, and no `BroadcastReceiver` of any kind. The USB permission result is polled, not received (comment at line 229). `grep` for `Receiver`, `registerReceiver`, `DETACHED`, `onDestroy`, `onStop`, `onNewIntent` finds nothing. So there is nothing to unregister.
 - Unplug is detected by polling in `stream()`: a `bulkTransfer` read returns `<= 0` and `findGoggles() == null` throws `IOException("goggles disconnected")` (about 100 ms, one read timeout). The `finally` then calls `stopRecording()`, `codec.release()` and `conn.close()`. `loop()` then shows "Waiting for goggles". The file is closed and the USB connection released.
 - `onPause` sets `running = false`, removes the pending `startWorker` post and joins the worker for up to 1 s. The worker's `stream()` `finally` is the only place that closes `rec`, so a recording is closed on every pause (the worker exits within one read timeout, 100 ms, when streaming).
 - `rec` is only non-null inside `stream()`, so the `finally` covers every path that opens a file.
@@ -181,7 +181,7 @@ Follow-ups: finding 2 (sps/pps reset) was applied in T157; the on-device lifecyc
 
 `MainActivity.stream()` now clears the parameter sets for every new connection, so a new recording never starts with the previous goggles' SPS/PPS. Not compiled or run here.
 
-The duplicate reset from the parallel T157/T160 merges was removed in T169; `stream()` now has a single `sps = pps = null;` (MainActivity.java:261).
+The duplicate reset from the parallel T157/T160 merges was removed in T169; `stream()` now has a single `sps = pps = null;` (MainActivity.java:265).
 
 ## T191: MediaCodec error handling review (Android)
 
