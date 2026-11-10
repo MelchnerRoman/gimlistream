@@ -7,6 +7,8 @@ edition = "2021"
 rusb = { version = "0.9", features = ["vendored"] }
 openh264 = "0.6"
 minifb = "0.27"
+# SIGINT/SIGTERM so a recording gets flushed on Ctrl-C. `termination` adds SIGTERM/SIGHUP on Unix.
+ctrlc = { version = "3", features = ["termination"] }
 
 [profile.release]
 opt-level = 3
