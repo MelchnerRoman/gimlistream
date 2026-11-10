@@ -16,7 +16,7 @@ Assets are generated once and committed: `assets/AppIcon.icns`, `assets/icon.ico
 ## Structure
 
 ```
-src/main.rs                       whole desktop app (~870 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
+src/main.rs                       whole desktop app (873 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
 build.rs                          Windows only: embeds assets/icon.ico via windres
 Cargo.toml / Cargo.lock          single package "gimlistream" 0.4.0
 bundle.sh                         macOS universal .app -> dist/Gimlistream.zip
@@ -91,8 +91,8 @@ Hardening (T57, T58):
 1. The version has a single source, `Cargo.toml` (`version = "0.4.0"`). `bundle.sh` reads it for `CFBundleShortVersionString`, and `android/build.gradle.kts` parses it for `versionName` and derives `versionCode` as major*10000 + minor*100 + patch (0.4.0 gives 400, replacing the earlier hard-coded 4). To release a new version, change only `Cargo.toml` (plus the "Current version" header at the top of this file, which is updated by hand); `Cargo.lock` follows on the next cargo build.
 2. CI runs both `cargo test` and the Android `NalSplitter` self-check (added to `build.yml`). The Android side is still a plain `main()`, not JUnit.
 3. Android release builds are signed with the debug key (marked `ponytail:` in `build.gradle.kts`). The macOS build is ad-hoc signed (also marked `ponytail:`). Both verified in T51. Both mean installers show security warnings. The README covers them (T54): Mac Gatekeeper (right-click → Open, described as ad-hoc signed), Android unknown-sources and Play Protect prompts, and Windows SmartScreen (More info → Run anyway).
-4. `main.rs` is a single ~870-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
-5. Cargo verified in T85 (macOS): `cargo test` ran 10 tests, 10 passed, 0 failed, 0 ignored (`capped_stream_stays_bounded_and_recovers`, `finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `menu_button_edges`, `read_actions`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `rec_dot_is_drawn_in_corner_only`, `caps_stream_without_start_code`, `watermark_blends_into_bottom_right`). `cargo build --release` last verified in T40 (success, about 6s). Neither command printed any warnings or errors. `cargo clippy` (T49): clean, 0 warnings.
+4. `main.rs` is a single 873-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
+5. Cargo verified in T91 (macOS): `cargo test` ran 10 tests, 10 passed, 0 failed, 0 ignored (`capped_stream_stays_bounded_and_recovers`, `finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `menu_button_edges`, `read_actions`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `rec_dot_is_drawn_in_corner_only`, `caps_stream_without_start_code`, `watermark_blends_into_bottom_right`). `cargo build --release` last verified in T40 (success, about 6s). Neither command printed any warnings or errors. `cargo clippy` (T49): clean, 0 warnings.
 
 ### Desktop unplug / replug review (T94)
 
@@ -106,7 +106,7 @@ Read-only review of `live()`, `stream()` and `read_action()` in `src/main.rs`. N
 ## Verification status of these notes
 
 - Read every source, script, workflow and build file listed above.
-- Ran `cargo test` in T85 (10 passed, 0 failed) and `cargo build --release` in T40 (success), with no warnings or errors. See Observation 5.
+- Ran `cargo test` in T91 (10 passed, 0 failed) and `cargo build --release` in T40 (success), with no warnings or errors. See Observation 5.
 - Ran `cargo clippy` in T49: clean, 0 warnings.
 - Bundle scripts (T52): still never executed. They are `sh` scripts needing lipo, codesign, ditto, mingw, curl, zip and gradle, and agents may only run npm/node/cargo. Checked by reading only: every file they reference exists (`assets/AppIcon.icns`, `assets/README-windows.txt`, `android/build.gradle.kts`); the README commands and output paths match the scripts; `build.yml` runs all three scripts with the same rustup targets and mingw install the scripts list; the version regex in `bundle.sh` matches `version = "0.4.0"` in `Cargo.toml`; `build.gradle.kts` parses that version for `versionName`/`versionCode`. Unverified: that the scripts actually succeed, the Zadig SHA-256 and URL, the static-link DLL check, the APK output filename `gimlistream-release.apk`, and the codesign/zip output. CI is the only place they run.
 - Did not run the Android build; it remains unverified. The Android `NalSplitter` self-check cannot be run by agents (no javac/java in their shell); the Android job in `build.yml` runs it and is the source of truth. The commands above are taken from the README, the scripts and CI.
