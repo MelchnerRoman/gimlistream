@@ -659,10 +659,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         keep_sps_pps(&complete, &mut sps, &mut pps);
         if app.recording != rec.is_some() {
             match rec.take() {
-                Some((mut f, path)) => {
-                    let _ = f.flush();
-                    app.set_status(&format!("saved {}", path.display()));
-                }
+                Some((f, path)) => app.set_status(&finish_recording(f, &path)),
                 None => {
                     let path = recording_path();
                     match std::fs::File::create(&path) {
@@ -715,14 +712,21 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
             }
         }
     }
-    if let Some((mut f, path)) = rec {
-        let _ = f.flush();
-        let saved = format!("saved {}", path.display());
+    if let Some((f, path)) = rec {
+        let saved = finish_recording(f, &path);
         app.set_status(&saved);
         // live() overwrites the status on error, so carry the filename in the error too.
         err = err.map(|e| format!("{e} ({saved})").into());
     }
     err.map_or(Ok(()), Err)
+}
+
+/// Flushes the recording; only claims "saved" if the last buffered bytes really hit the disk.
+fn finish_recording(mut f: std::io::BufWriter<std::fs::File>, path: &std::path::Path) -> String {
+    match f.flush() {
+        Ok(()) => format!("saved {}", path.display()),
+        Err(e) => format!("saving {} failed: {e}", path.display()),
+    }
 }
 
 enum ReadAction {
