@@ -631,6 +631,27 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     let mut err: Option<Box<dyn std::error::Error>> = None;
     while app.watching() {
         app.poll_ui();
+        // Handled before reading so R works even while the stream is stalled.
+        if app.recording != rec.is_some() {
+            match rec.take() {
+                Some((f, path)) => app.set_status(&finish_recording(f, &path)),
+                None => {
+                    let path = recording_path();
+                    match std::fs::File::create(&path) {
+                        Ok(f) => {
+                            let mut f = std::io::BufWriter::new(f);
+                            let _ = f.write_all(&[sps.as_slice(), &pps].concat());
+                            app.set_status(&format!("recording to {}", path.display()));
+                            rec = Some((f, path));
+                        }
+                        Err(e) => {
+                            app.recording = false;
+                            app.set_status(&format!("can't record to {}: {e}", path.display()));
+                        }
+                    }
+                }
+            }
+        }
         let read = handle.read_bulk(ep_in, &mut chunk, Duration::from_millis(100));
         match read_action(&read) {
             ReadAction::Data(n) => stream.extend_from_slice(&chunk[..n]),
@@ -662,26 +683,6 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         let complete: Vec<u8> = stream.drain(..cut).collect();
 
         keep_sps_pps(&complete, &mut sps, &mut pps);
-        if app.recording != rec.is_some() {
-            match rec.take() {
-                Some((f, path)) => app.set_status(&finish_recording(f, &path)),
-                None => {
-                    let path = recording_path();
-                    match std::fs::File::create(&path) {
-                        Ok(f) => {
-                            let mut f = std::io::BufWriter::new(f);
-                            let _ = f.write_all(&[sps.as_slice(), &pps].concat());
-                            app.set_status(&format!("recording to {}", path.display()));
-                            rec = Some((f, path));
-                        }
-                        Err(e) => {
-                            app.recording = false;
-                            app.set_status(&format!("can't record to {}: {e}", path.display()));
-                        }
-                    }
-                }
-            }
-        }
         if let Some((f, path)) = &mut rec {
             if let Err(e) = f.write_all(&complete) {
                 let msg = format!("recording to {} stopped: {e}", path.display());
