@@ -11,7 +11,7 @@ Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on ma
 | Packaging | POSIX shell scripts, `build.rs` (Windows icon only) | `lipo`, `codesign`, `ditto` (mac); MinGW `x86_64-w64-mingw32-*` (Windows); Gradle + JDK 21 + Android SDK 37 (Android) |
 | CI | GitHub Actions (`.github/workflows/build.yml`) | macos-latest for desktop, ubuntu-latest for Android |
 
-Assets are generated once and committed: `assets/AppIcon.icns`, `assets/icon.ico`, `assets/watermark.rgba` and `assets/menu.rgb` (the last two are raw pixel buffers embedded with `include_bytes!`). `assets/make-icon.swift` and `assets/make-menu.swift` produce them; they are not run by the build.
+Assets are generated once and committed: `assets/AppIcon.icns`, `assets/icon.ico`, `assets/watermark.rgba` and `assets/menu.rgb` (the last two are raw pixel buffers embedded with `include_bytes!`). `assets/make-icon.swift` and `assets/make-menu.swift` produce them; they are not run by the build. Other files in `assets/`: `icon-source.jpeg` (source image for the icon) and `README-windows.txt` (bundled into the Windows zip by `bundle-windows.sh`).
 
 ## Structure
 
@@ -70,6 +70,8 @@ Hardening (T57, T58):
 ./bundle-windows.sh    # dist/Gimlistream-windows.zip (brew install mingw-w64; rustup target add x86_64-pc-windows-gnu)
 ./bundle-android.sh    # dist/Gimlistream.apk (signed with the debug key)
 ```
+
+`bundle-android.sh` defaults `JAVA_HOME` to `/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home` and `ANDROID_HOME` to `/opt/homebrew/share/android-commandlinetools` (Homebrew paths); override either via the environment. There is no Gradle wrapper, so the script calls the `gradle` on PATH; CI pins Gradle 9.9.
 
 `bundle.sh` expects rustup targets `aarch64-apple-darwin` and `x86_64-apple-darwin`. CI installs the same three rustup targets and runs `bundle.sh` and `bundle-windows.sh` on macos-latest, and `bundle-android.sh` on ubuntu-latest. Tag pushes (`v*`) publish a GitHub Release with the three artifacts.
 
