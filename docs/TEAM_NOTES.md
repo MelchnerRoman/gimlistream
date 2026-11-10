@@ -91,6 +91,15 @@ Hardening (T57, T58):
 4. `main.rs` is a single 852-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
 5. Cargo verified in T79 (macOS, fresh worktree): `cargo test` ran 9 tests, 9 passed, 0 failed, 0 ignored (`finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `menu_button_edges`, `read_actions`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `rec_dot_is_drawn_in_corner_only`, `caps_stream_without_start_code`, `watermark_blends_into_bottom_right`). `cargo build --release` last verified in T40 (success, about 6s). Neither command printed any warnings or errors. `cargo clippy` (T49): clean, 0 warnings.
 
+### Desktop unplug / replug review (T94)
+
+Read-only review of `live()`, `stream()` and `read_action()` in `src/main.rs`. Not verified on hardware.
+
+- Unplug mid-stream: the next `read_bulk` returns an error other than Timeout/Interrupted (typically `NoDevice`), `read_action` maps it to `Fail`, `stream()` flushes any open recording and returns the error. `live()` shows "stream error ..., retrying...", waits 1 s, then loops. While the goggles are gone, `find_goggles()` returns `None` and the status reads "waiting for goggles". Handled.
+- Replug: the next `find_goggles()` finds the device, `open_goggles()` reopens and claims interface 3, and `stream()` re-sends `RMVT` and starts with a fresh decoder, buffer and SPS/PPS. Handled.
+- Recording across a replug: `app.recording` stays true, so the new `stream()` opens a new `Gimlistream N.h264` on its first complete NAL. Handled, but the "saved ..." status set before the error is overwritten by "stream error" in `live()`, so the user is not told where the first file went.
+- Gap: the `RMVT` poke in `stream()` ignores its `write_bulk` result (`let _ = ...`). If a device stops answering reads with `Timeout` instead of an error, the loop would keep poking and never reach `Fail`. Probably not the case with libusb (reads on a gone device return an error), but unverified. Smallest fix: treat a failed poke as `Fail`, i.e. `if handle.write_bulk(..).is_err() { err = ...; break; }`.
+
 ## Verification status of these notes
 
 - Read every source, script, workflow and build file listed above.
