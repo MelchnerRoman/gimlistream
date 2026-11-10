@@ -159,6 +159,10 @@ fn main() -> Res<()> {
         );
         return Ok(());
     }
+    // A "windows"-subsystem process started from cmd/PowerShell has no console, so Ctrl-C never reaches
+    // the handler below. Attach to the parent console first; it fails harmlessly under Explorer (no console).
+    #[cfg(windows)]
+    win::attach_parent_console();
     // Only set a flag: the loops see it and unwind, so an open recording is still flushed.
     ctrlc::set_handler(|| QUIT.store(true, Ordering::Relaxed))?;
     // Window first: when launched from Finder there's no terminal, so the title is the status line.
@@ -547,6 +551,10 @@ mod win {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
 
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
     #[link(name = "user32")]
     extern "system" {
         fn MessageBoxW(hwnd: *mut c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
@@ -568,6 +576,14 @@ mod win {
             .encode_wide()
             .chain(Some(0))
             .collect()
+    }
+
+    /// Joins the console that launched us, so Ctrl-C is delivered. No-op when there is none (Explorer).
+    pub fn attach_parent_console() {
+        const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+        unsafe {
+            AttachConsole(ATTACH_PARENT_PROCESS);
+        }
     }
 
     /// Blocking message box. With `yes_no`, returns whether Yes was clicked.
