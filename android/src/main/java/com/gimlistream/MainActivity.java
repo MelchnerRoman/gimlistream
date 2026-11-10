@@ -326,6 +326,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
         } finally {
             stopRecording();
+            if (recording) { // stream ended (error/disconnect/stop) mid-recording: keep the REC button in sync with the closed file
+                recording = false;
+                runOnUiThread(() -> setRecording(false));
+            }
             try {
                 if (codec != null) codec.release();
             } finally {
