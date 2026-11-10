@@ -124,6 +124,10 @@ Agent shells can't run gradle or adb, so these have never been run by agents:
 
 - `gradle --no-daemon -p android testDebugUnitTest` (NalSplitterTest, including the T121 overflow test once re-added in T139) and `gradle :android:assembleDebug`.
 - On-device check of the T124 in-place resize re-fit (split-screen/freeform resize should re-letterbox the video).
+- On-device lifecycle check (T159, from T156). Expected results, with the goggles connected:
+  - Pause during REC, then resume: one playable file per session, closed on pause.
+  - Unplug during REC: file saved, and the screen shows "Waiting for goggles".
+  - Permission dialog during REC: the first file ends and a second one starts on resume (current behaviour, see T156 finding 4; confirm the owner wants this).
 
 The CI Android unit-test step is the only automated check.
 
@@ -148,10 +152,16 @@ Facts from the code:
 
 Findings (none is a crash or a leak):
 1. **Join can time out, so the worker can outlive `onPause` by about 1–2 s.** The idle branch `sleep(1000)` (no goggles found) does not check `running`, and the stream-start and no-data `bulkTransfer(out, MAGIC, 2000)` pokes can block up to 2 s. `join(1000)` then returns early. The worker still exits (`running` is false) and closes the file, and `onResume` waits on `startWorker` if it is still alive. Low. Risk: if Android kills the process in that window, the 1 MB `BufferedOutputStream` may not be flushed and the file is truncated.
-2. **`sps`/`pps` are never cleared between streams.** `record()` writes the last SPS/PPS from the previous connection at the start of the new file. If the goggles' mode changed, the file header is wrong until the next parameter sets. Low. One-line fix: reset `sps = pps = null;` at the start of `stream()`.
+2. **`sps`/`pps` were never cleared between streams.** `record()` wrote the last SPS/PPS from the previous connection at the start of the new file. Applied in T157: `stream()` resets `sps` and `pps` to null before it opens the device. See "T157" below.
 3. **Errors other than `Exception` kill the worker.** `loop()` catches `Exception` and `RuntimeException` only. An `Error` (e.g. `OutOfMemoryError`) ends the thread with an uncaught exception, which crashes the app. The `finally` still closes the file and the connection. Very low. Not worth changing without a reproduction.
 4. **Behaviour to confirm with the owner (not a bug in the code):** `recording` stays true after pause, unplug or permission dialog. The next `onResume` then opens a new `Gimlistream … .h264` on the first NAL, with a toast. So an app switch or a permission prompt during REC ends the first file and silently starts a second one. This is intended by the T117 notes, but the owner may not want it.
 
 Needs device checks (agents cannot run them): pause during REC then resume (expect one playable file per session, closed on pause); unplug during REC (expect file saved and "Waiting for goggles"); permission dialog during REC.
 
-Follow-ups created by T156: see the orchestrator's task list (sps/pps reset; on-device lifecycle check). Fixes not applied (read-only task).
+Follow-ups: finding 2 (sps/pps reset) was applied in T157; the on-device lifecycle check is T159 (listed under "Needs human verification"). Findings 1 and 3 are not applied.
+
+## T157: SPS/PPS reset at the start of each stream (Android)
+
+`MainActivity.stream()` now clears the parameter sets for every new connection, so a new recording never starts with the previous goggles' SPS/PPS. Not compiled or run here.
+
+Note: the reset appears twice in `stream()` (`sps = pps = null;` at the top, and `sps = null; pps = null;` after `openDevice`). Both came from parallel merges (T157 and T160). Behaviour is the same; one of them can be deleted in a later cleanup.
