@@ -168,6 +168,10 @@ Follow-ups: finding 2 (sps/pps reset) was applied in T157; the on-device lifecyc
 
 The duplicate reset from the parallel T157/T160 merges was removed in T169; `stream()` now has a single `sps = pps = null;` (MainActivity.java:261).
 
+## T191: MediaCodec error handling review (Android)
+
+Reviewed `stream()`/`queue()`/`drain()`/`loop()`. Already fine: `createDecoderByType` `IOException`, `configure`/`start` `CodecException` and dequeue `IllegalStateException` all propagate out of `stream()`, whose `finally` closes the file, releases the codec and the connection; `loop()` shows "Connection lost: ... Retrying…" and restarts. Fixed (not compiled or run here): `surfaceDestroyed` and the decode step (`nals.add` + `drain`) now share `surfaceLock`, so the surface is not torn down while a frame is being rendered; `stream()` then sees `surface == null` and exits. The 1 s retry sleeps in `loop()` are now 10 x 100 ms and stop when `running` is false.
+
 ## T167/T168: responsive idle sleep (Android)
 
 The idle "no goggles" sleep in `MainActivity.loop()` now exits promptly on pause (10 x 100 ms, checks `running`). T168 verifies this. The 2 s `bulkTransfer` pokes can still delay exit.
