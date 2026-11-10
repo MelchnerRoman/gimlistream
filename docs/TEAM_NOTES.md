@@ -1,6 +1,6 @@
 # Gimlistream: team notes
 
-Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on macOS, Windows and Android. Current version 0.4.0 (release commit `a76237e`; this tree adds T182, T189, T193, T195, T205, T209 and T224 on top of that release).
+Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on macOS, Windows and Android. Current version 0.5.0 (`Cargo.toml`).
 
 ## Stack
 
@@ -23,7 +23,7 @@ bundle.sh                         macOS universal .app -> dist/Gimlistream.zip
 bundle-windows.sh                 cross-build x86_64-pc-windows-gnu -> dist/Gimlistream-windows.zip (bundles pinned zadig.exe + README)
 bundle-android.sh                 gradle assembleRelease -> dist/Gimlistream.apk
 android/
-  build.gradle.kts                applicationId com.gimlistream, minSdk 26, targetSdk/compileSdk 37, versionName/versionCode derived from Cargo.toml (versionCode = major*10000 + minor*100 + patch, 400 for 0.4.0)
+  build.gradle.kts                applicationId com.gimlistream, minSdk 26, targetSdk/compileSdk 37, versionName/versionCode derived from Cargo.toml (versionCode = major*10000 + minor*100 + patch, 500 for 0.5.0)
   src/main/java/com/gimlistream/
     MainActivity.java             USB worker thread, MediaCodec decode to SurfaceView, recording (476 lines)
     NalSplitter.java              Annex B NAL splitter, plain Java, self-check in main()
