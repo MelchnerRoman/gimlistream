@@ -344,7 +344,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 stopRecording();
             }
             if (rec != null) rec.write(buf, off, len);
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) { // MediaStore can throw SecurityException/IllegalArgumentException
             toast("Recording failed: " + e.getMessage());
             try {
                 if (rec != null) rec.close(); // release the file/MediaStore handle
