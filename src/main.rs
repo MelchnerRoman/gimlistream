@@ -207,6 +207,7 @@ fn main() -> Res<()> {
         recording: false,
         leave: false,
         diagnosing: None,
+        screen: Vec::new(),
     };
 
     while let Some(record) = app.menu() {
@@ -223,14 +224,17 @@ impl App {
         if !self.quit_requested() {
             self.window.set_title("Gimlistream"); // keep the final "saved <file>" report on quit
         }
-        let img: Vec<u32> = MENU
+        self.screen = MENU
             .as_chunks::<3>()
             .0
             .iter()
             .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]]))
             .collect();
         // Advance minifb's key state: the Esc that left the live view still reads as "pressed" until the next update and would quit.
-        self.window.update();
+        // With the menu buffer, not update(): the previous buffer was just dropped.
+        self.window
+            .update_with_buffer(&self.screen, MENU_W, MENU_H)
+            .ok()?;
         let mut was_down = true; // ignore a click still held from the previous screen
         while self.window.is_open() && !self.quit_requested() {
             let down = self.window.get_mouse_down(MouseButton::Left);
@@ -258,7 +262,9 @@ impl App {
                 Some(_) => return None,
                 None => {}
             }
-            self.window.update_with_buffer(&img, MENU_W, MENU_H).ok()?;
+            self.window
+                .update_with_buffer(&self.screen, MENU_W, MENU_H)
+                .ok()?;
             std::thread::sleep(Duration::from_millis(16));
         }
         None
@@ -336,6 +342,9 @@ struct App {
     recording: bool, // wanted by the user; stream() opens/closes the file to match
     leave: bool,     // Esc pressed in the live view: back to the menu
     diagnosing: Option<std::thread::JoinHandle<()>>,
+    /// The last buffer handed to minifb. On macOS `window.update()` redraws from it, so it must
+    /// live as long as the window: a freed menu or video frame there crashed the app (v0.5.0).
+    screen: Vec<u32>,
 }
 
 impl App {
@@ -724,7 +733,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     handle.write_bulk(ep_out, MAGIC, Duration::from_secs(2))?;
 
     let mut decoder = Decoder::new()?;
-    let (mut rgb, mut frame) = (Vec::new(), Vec::new());
+    let mut rgb = Vec::new();
     let mut chunk = vec![0u8; 131072];
     let mut stream: Vec<u8> = Vec::new();
     // Raw H.264 recording. SPS/PPS are kept so a file started mid-stream is still playable.
@@ -825,6 +834,8 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
                 }
                 rgb.resize(w * h * 3, 0);
                 yuv.write_rgb8(&mut rgb);
+                // Refill in place and hand it to minifb right away: a reallocation frees the old buffer.
+                let frame = &mut app.screen;
                 frame.clear();
                 frame.extend(
                     rgb.as_chunks::<3>()
@@ -832,12 +843,12 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
                         .iter()
                         .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]])),
                 );
-                draw_watermark(&mut frame, w, h);
+                draw_watermark(frame, w, h);
                 if rec.is_some() {
-                    draw_rec_dot(&mut frame, w, h);
+                    draw_rec_dot(frame, w, h);
                 }
                 // Don't `?`: the recording must still be flushed and reported.
-                if let Err(e) = app.window.update_with_buffer(&frame, w, h) {
+                if let Err(e) = app.window.update_with_buffer(&app.screen, w, h) {
                     err = Some(e.into());
                     break;
                 }
