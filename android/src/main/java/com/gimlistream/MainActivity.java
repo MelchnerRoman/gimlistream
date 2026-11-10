@@ -351,6 +351,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             } catch (IOException ignored) {
             }
             rec = null;
+            recording = false; // now, so the next NAL doesn't retry openRecording before the UI thread runs
             runOnUiThread(() -> setRecording(false));
         }
     }
