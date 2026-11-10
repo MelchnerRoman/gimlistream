@@ -719,7 +719,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         let _ = f.flush();
         app.set_status(&format!("saved {}", path.display()));
     }
-    err.map_or(Ok(()), |e| Err(e.into()))
+    err.map_or(Ok(()), Err)
 }
 
 enum ReadAction {
