@@ -386,10 +386,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             return new BufferedOutputStream(out, 1 << 20);
         }
         File dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES); // null when storage is unmounted
-        if (dir == null || (!dir.isDirectory() && !dir.mkdirs())) throw new IOException("storage not available");
-        File f = new File(dir, name);
         // Same-second restart would truncate the previous file (MediaStore on 29+ renames on its own).
-        for (int i = 1; f.exists(); i++) f = new File(dir, name.replace(".h264", " (" + i + ").h264"));
+        File f = RecordingUtil.pickUnusedFile(dir, name);
         recName = f.getPath();
         return new BufferedOutputStream(new FileOutputStream(f), 1 << 20);
     }
