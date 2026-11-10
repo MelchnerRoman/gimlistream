@@ -103,6 +103,17 @@ Read-only review of `live()`, `stream()` and `read_action()` in `src/main.rs`. N
 - Recording across a replug: `app.recording` stays true, so the new `stream()` opens a new `Gimlistream N.h264` on its first complete NAL. Handled, but the "saved ..." status set before the error is overwritten by "stream error" in `live()`, so the user is not told where the first file went.
 - Fixed (after T94): the `RMVT` poke in `stream()` used to ignore its `write_bulk` result. A failed poke write now counts as a stream failure: `stream()` stores the error and breaks, so `live()` shows "stream error ..., retrying..." and reconnects. Not hardware-verified.
 
+### Next small improvements (T117, read-only review, not applied)
+
+Scope: `MainActivity.java` worker/`stream()`/`record()`/`drain()`, and `src/main.rs` outside the areas T94 covered (`live()`, `stream()`, `read_action()`). Nothing compiled or run on hardware.
+
+1. **Android `record()`: a failed open retries on every NAL.** The `IOException` branch sets `rec = null` and calls `setRecording(false)` via `runOnUiThread`, but `recording` (volatile, worker-readable) stays true until the UI thread runs. Meanwhile the next NAL sees `recording && rec == null` and calls `openRecording()` again, which can toast "Recording failed" several times. Fix: set `recording = false;` directly in the catch, before the `runOnUiThread`. One line.
+2. **Android `fitVideo()` goes stale on in-place resize.** The manifest has `sensorLandscape` plus `configChanges` for `screenSize`, so a split-screen or freeform resize does not recreate the activity. `fitVideo()` only runs on `INFO_OUTPUT_FORMAT_CHANGED`, so the letterbox keeps the old size until the next format change. Fix: keep the last `w`/`h` in fields and re-run `fitVideo` from a layout-change listener on `R.id.root`. Needs a device check (split-screen), since the 180° rotation case does not change screen size.
+3. **Android `stream()`: `boolean[] showing = {false}` is an array only for no reason.** No lambda captures it, so a plain local `boolean showing` works. Trivial cleanup, same behaviour.
+4. **Desktop `find_goggles()`: one unreadable device aborts the whole scan.** `dev.device_descriptor()?` returns the error to `live()`, which then shows "couldn't list USB devices" and never reaches the goggles. `diagnostics()` already skips such devices (`let Ok(d) = ... else { continue }`). Fix: use the same `continue` pattern here. Rare on macOS, but it is one line and matches the existing code.
+
+Ruled out (checked, no change proposed): the `stream()` poke/retry paths and the desktop `write_bulk` poke error (covered by T94 and T106); the Android `onPause` join (bounded at 1 s); the Android `queue()` drop when the decoder is busy (documented as a deliberate trade-off in the code); the Android `NalSplitter` 3-byte start-code assumption in `record()`/`queue()` (matches `NalSplitter`'s output, checked in the source).
+
 ## Verification status of these notes
 
 - Read every source, script, workflow and build file listed above.
