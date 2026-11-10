@@ -4,6 +4,8 @@ import static org.junit.Assert.assertFalse;
 
 import static org.junit.Assert.assertEquals;
 
+import static org.junit.Assert.assertTrue;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
@@ -38,6 +40,13 @@ public class RecordingUtilTest {
     }
 
     @Test
+    public void missingDirIsCreated() throws IOException {
+        File missing = new File(tmp.getRoot(), "missing");
+        assertEquals(new File(missing, "a.h264"), RecordingUtil.pickUnusedFile(missing, "a.h264"));
+        assertTrue(missing.isDirectory());
+    }
+
+    @Test
     public void runtimeExceptionOnCloseStillClearsRecordingFlag() {
         OutputStream bad = new OutputStream() {
             @Override public void write(int b) {}
@@ -46,5 +55,10 @@ public class RecordingUtilTest {
         boolean recording = true;
         recording = RecordingUtil.closeAfterFailure(bad);
         assertFalse(recording);
+    }
+
+    @Test
+    public void closeAfterFailureNullReturnsFalse() {
+        assertFalse(RecordingUtil.closeAfterFailure(null));
     }
 }
