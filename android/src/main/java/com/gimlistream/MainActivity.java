@@ -149,10 +149,12 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     protected void onResume() {
         super.onResume();
         try {
-            if (worker != null) worker.join(); // onPause's join may have timed out (poke is 2 s); never run two workers
+            if (worker != null) worker.join(2000); // onPause's join may have timed out (poke is 2 s); never run two workers
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
+            return;
         }
+        if (worker != null && worker.isAlive()) return;
         running = true;
         worker = new Thread(this::loop, "gimlistream-usb");
         worker.start();
