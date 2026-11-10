@@ -139,6 +139,11 @@ fn keep_sps_pps(buf: &[u8], sps: &mut Vec<u8>, pps: &mut Vec<u8>) {
     }
 }
 
+/// Offset of the start code of the first IDR slice (NAL type 5) in `buf`.
+fn first_idr(buf: &[u8]) -> Option<usize> {
+    start_codes(buf).into_iter().find(|&s| buf.get(s + 3).is_some_and(|t| t & 0x1f == 5))
+}
+
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Res<()> {
@@ -633,6 +638,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     // Raw H.264 recording. SPS/PPS are kept so a file started mid-stream is still playable.
     let mut rec: Option<(std::io::BufWriter<std::fs::File>, PathBuf)> = None;
     let (mut sps, mut pps) = (Vec::new(), Vec::new());
+    let mut rec_wait_idr = false; // recording is open but still waiting for its first keyframe
 
     app.set_status("streaming");
     let mut err: Option<Box<dyn std::error::Error>> = None;
@@ -643,11 +649,19 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
             match rec.take() {
                 Some((f, path)) => app.set_status(&finish_recording(f, &path)),
                 None => {
-                    let path = recording_path();
-                    match std::fs::File::create(&path) {
+                    let mut path = recording_path();
+                    let open = |p: &PathBuf| {
+                        std::fs::OpenOptions::new().write(true).create_new(true).open(p)
+                    };
+                    let mut res = open(&path);
+                    if matches!(&res, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
+                        path = recording_path(); // taken since exists(); retry once
+                        res = open(&path);
+                    }
+                    match res {
                         Ok(f) => {
-                            let mut f = std::io::BufWriter::new(f);
-                            let _ = f.write_all(&[sps.as_slice(), &pps].concat());
+                            let f = std::io::BufWriter::new(f);
+                            rec_wait_idr = true;
                             app.set_status(&format!("recording to {}", path.display()));
                             rec = Some((f, path));
                         }
@@ -691,7 +705,16 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
 
         keep_sps_pps(&complete, &mut sps, &mut pps);
         if let Some((f, path)) = &mut rec {
-            if let Err(e) = f.write_all(&complete) {
+            // A file must start at a keyframe: skip everything before the first IDR, then prepend SPS/PPS.
+            let written = match (rec_wait_idr, first_idr(&complete)) {
+                (false, _) => f.write_all(&complete),
+                (true, None) => Ok(()),
+                (true, Some(off)) => {
+                    rec_wait_idr = false;
+                    f.write_all(&[sps.as_slice(), &pps, &complete[off..]].concat())
+                }
+            };
+            if let Err(e) = written {
                 let msg = format!("recording to {} stopped: {e}", path.display());
                 rec = None;
                 app.recording = false;
@@ -765,6 +788,15 @@ fn read_action(r: &Result<usize, rusb::Error>) -> ReadAction {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn finds_idr_offset() {
+        use super::first_idr;
+        assert_eq!(first_idr(&[0, 0, 1, 0x41, 9, 0, 0, 1, 0x65, 9]), Some(5));
+        assert_eq!(first_idr(&[0, 0, 1, 0x65, 9]), Some(0));
+        assert_eq!(first_idr(&[0, 0, 1, 0x41, 9, 0, 0, 1, 0x67, 9]), None);
+        assert_eq!(first_idr(&[]), None);
+    }
+
     #[test]
     fn read_actions() {
         use super::{read_action as a, ReadAction as R};
