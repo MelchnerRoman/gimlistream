@@ -18,7 +18,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.util.Log;
 import android.window.OnBackInvokedDispatcher;
 import android.view.Gravity;
 import android.view.Surface;
@@ -56,16 +58,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private TextView status;
     private SurfaceView video;
     private volatile Surface surface;
+    private final Object surfaceLock = new Object();
     private volatile boolean running;
     private volatile boolean live;      // false while the start menu is showing
     private volatile boolean recording; // wanted by the user; the worker opens/closes the file to match
     private Thread worker;
     private View menu;
     private Button recButton;
+    private int videoW, videoH; // UI thread only: last decoded size, 0 until known
 
     // Worker thread only: the open recording, and the latest SPS/PPS so a file started mid-stream is playable.
     private OutputStream rec;
     private String recName;
+    private boolean recWaiting; // worker thread only: REC is on and the "waiting for keyframe" status is showing
     private byte[] sps, pps;
 
     @Override
@@ -76,6 +81,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         status = findViewById(R.id.status);
         video = findViewById(R.id.video);
         video.getHolder().addCallback(this);
+        // In-place resize (split-screen/freeform) doesn't recreate us, so re-letterbox on root size change.
+        findViewById(R.id.root).addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (videoW > 0 && (r - l != or - ol || b - t != ob - ot)) fitVideo(videoW, videoH);
+        });
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();
 
@@ -148,6 +157,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onResume() {
         super.onResume();
+        startWorker(); // waits (non-blocking) if onPause's join timed out; never runs two workers
+    }
+
+    /** Starts the worker unless the old one is still winding down; then retries until it has exited. */
+    private final Runnable startWorker = this::startWorker;
+
+    private void startWorker() {
+        if (worker != null && worker.isAlive()) {
+            video.postDelayed(startWorker, 250); // onPause cancels this
+            return;
+        }
         running = true;
         worker = new Thread(this::loop, "gimlistream-usb");
         worker.start();
@@ -156,8 +176,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onPause() {
         running = false;
+        video.removeCallbacks(startWorker);
         try {
-            worker.join(1000); // reads time out after 100 ms, so this is quick
+            if (worker != null) worker.join(1000); // reads time out after 100 ms, so this is quick
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }
@@ -175,40 +196,59 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        surface = null;
+        synchronized (surfaceLock) { // waits for an in-flight render; the worker then stops and releases the codec
+            surface = null;
+        }
     }
 
     /** Worker thread: find goggles, get permission, stream; retry on anything going wrong. */
     private void loop() {
         boolean permissionRequested = false;
+        long lastRequestMs = 0;
+        boolean menuShown = false;
         while (running) {
-            if (!live) {
-                sleep(100);
-                continue;
-            }
-            UsbDevice dev = findGoggles();
-            if (dev == null) {
-                permissionRequested = false;
-                setStatus("Waiting for goggles…\nConnect DJI FPV Goggles V1/V2 with a USB-C cable (OTG)");
-                sleep(1000);
-            } else if (!usb.hasPermission(dev)) {
-                setStatus("Allow Gimlistream to access the goggles");
-                if (!permissionRequested) {
-                    permissionRequested = true;
-                    // Result is picked up by polling hasPermission(), so no receiver is needed.
-                    Intent i = new Intent("com.gimlistream.USB_PERMISSION").setPackage(getPackageName());
-                    usb.requestPermission(dev, PendingIntent.getBroadcast(this, 0, i, PendingIntent.FLAG_MUTABLE));
+            try {
+                if (!live) {
+                    if (!menuShown) setStatus(null); // don't leave "Waiting for goggles" over the menu
+                    menuShown = true;
+                    sleep(100);
+                    continue;
                 }
-                sleep(500);
-            } else if (surface == null) {
-                sleep(100);
-            } else {
-                try {
-                    stream(dev);
-                } catch (Exception e) {
-                    setStatus("Connection lost: " + e.getMessage() + "\nRetrying…");
-                    sleep(1000);
+                menuShown = false;
+                UsbDevice dev = findGoggles();
+                if (dev == null) {
+                    permissionRequested = false;
+                    setStatus("Waiting for goggles…\nConnect DJI FPV Goggles V1/V2 with a USB-C cable (OTG)");
+                    for (int i = 0; i < 10 && running; i++) sleep(100); // short steps so onPause's join() isn't left waiting
+                } else if (!usb.hasPermission(dev)) {
+                    setStatus("Allow Gimlistream to access the goggles");
+                    // Re-ask every 15 s so a denied dialog doesn't need a replug.
+                    long now = System.currentTimeMillis();
+                    if (!permissionRequested || now - lastRequestMs > 15000) {
+                        permissionRequested = true;
+                        lastRequestMs = now;
+                        // Result is picked up by polling hasPermission(), so no receiver is needed.
+                        Intent i = new Intent("com.gimlistream.USB_PERMISSION").setPackage(getPackageName());
+                        usb.requestPermission(dev, PendingIntent.getBroadcast(this, 0, i, PendingIntent.FLAG_MUTABLE));
+                    }
+                    sleep(500);
+                } else if (surface == null) {
+                    sleep(100);
+                } else {
+                    try {
+                        stream(dev);
+                    } catch (Exception e) {
+                        if (!running) break; // paused mid-stream (e.g. surface torn down): exit now, onPause is joining us
+                        permissionRequested = false; // detach + quick replug: the new device needs a fresh request now, not after 15 s
+                        setStatus("Connection lost: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
+                        for (int i = 0; i < 10 && running; i++) sleep(100); // stay responsive to onPause
+                    }
                 }
+            } catch (RuntimeException e) {
+                if (!running) break;
+                Log.w("gimlistream", "loop error", e);
+                setStatus("Error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
+                for (int i = 0; i < 10 && running; i++) sleep(100); // e.g. SecurityException from the USB calls; keep the worker alive
             }
         }
     }
@@ -223,12 +263,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void stream(UsbDevice dev) throws IOException {
+        sps = pps = null; // don't write the previous connection's params into a new recording
         UsbDeviceConnection conn = usb.openDevice(dev);
         if (conn == null) {
             throw new IOException("can't open the goggles");
         }
         MediaCodec codec = null;
         try {
+            Surface target = surface; // the field can go null at any time (onPause); don't configure the decoder with null
+            if (target == null) {
+                return;
+            }
             if (dev.getInterfaceCount() <= IFACE) {
                 throw new IOException("goggles have no video interface");
             }
@@ -253,37 +298,57 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (Build.VERSION.SDK_INT >= 30) {
                 format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
             }
-            codec.configure(format, surface, null, 0);
+            codec.configure(format, target, null, 0);
             codec.start();
 
             MediaCodec c = codec;
-            boolean[] showing = {false};
+            boolean showing = false;
             NalSplitter nals = new NalSplitter();
             byte[] chunk = new byte[131072];
+            int errors = 0;
             while (running && live && surface != null) {
+                long t0 = SystemClock.elapsedRealtime();
                 int n = conn.bulkTransfer(in, chunk, chunk.length, 100);
                 if (n <= 0) {
                     if (findGoggles() == null) {
                         throw new IOException("goggles disconnected");
                     }
+                    // Android reports timeouts and errors both as -1; only a -1 that returns well before the 100 ms timeout is a real error.
+                    if (n < 0 && SystemClock.elapsedRealtime() - t0 < 50 && ++errors >= 20) {
+                        throw new IOException("repeated USB read errors");
+                    }
                     conn.bulkTransfer(out, MAGIC, MAGIC.length, 2000); // goggles stop streaming until poked again
                     continue;
                 }
-                nals.add(chunk, n, (buf, off, len) -> {
-                    record(buf, off, len);
-                    queue(c, buf, off, len);
-                });
-                if (drain(c) && !showing[0]) {
-                    showing[0] = true;
-                    setStatus(null);
+                errors = 0;
+                // surfaceDestroyed takes the same lock, so the surface is never torn down mid-render.
+                synchronized (surfaceLock) {
+                    if (surface == null) break;
+                    nals.add(chunk, n, (buf, off, len) -> {
+                        record(buf, off, len);
+                        queue(c, buf, off, len);
+                    });
+                    if (drain(c) && !showing) {
+                        showing = true;
+                        if (!recWaiting) setStatus(null); // don't hide "waiting for keyframe" if REC was pressed before the first frame
+                    }
                 }
             }
         } finally {
             stopRecording();
-            if (codec != null) {
-                codec.release();
+            if (recording) { // stream ended (error/disconnect/stop) mid-recording: keep the REC button in sync with the closed file
+                recording = false;
+                if (recWaiting) {
+                    recWaiting = false;
+                    setStatus(null); // no IDR arrived, so no file exists and "waiting for keyframe" is stale
+                }
+                runOnUiThread(() -> setRecording(false));
             }
-            conn.close();
+            try {
+                if (codec != null) codec.release();
+            } finally {
+                conn.close(); // always release the USB connection, even if codec.release() throws
+            }
         }
     }
 
@@ -293,18 +358,33 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (type == 7) sps = Arrays.copyOfRange(buf, off, off + len);
         if (type == 8) pps = Arrays.copyOfRange(buf, off, off + len);
         try {
-            if (recording && rec == null) {
+            if (!recording) {
+                if (recWaiting) { // stopped before the first IDR: no file was ever created
+                    recWaiting = false;
+                    setStatus(null);
+                }
+                if (rec != null) stopRecording();
+            } else if (rec == null) {
+                if (type != 5) { // start at a keyframe (desktop T182/T238): a P-slice first would not decode
+                    if (!recWaiting) {
+                        recWaiting = true;
+                        setStatus("Recording… waiting for keyframe");
+                    }
+                    return;
+                }
                 rec = openRecording();
                 if (sps != null) rec.write(sps);
                 if (pps != null) rec.write(pps);
+                recWaiting = false;
+                setStatus(null);
                 toast("Recording to " + recName);
-            } else if (!recording && rec != null) {
-                stopRecording();
             }
             if (rec != null) rec.write(buf, off, len);
-        } catch (IOException e) {
-            toast("Recording failed: " + e.getMessage());
+        } catch (IOException | RuntimeException e) { // MediaStore can throw SecurityException/IllegalArgumentException
+            toast("Recording failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+            recording = RecordingUtil.closeAfterFailure(rec);
             rec = null;
+            // recording is false now, so the next NAL doesn't retry openRecording before the UI thread runs
             runOnUiThread(() -> setRecording(false));
         }
     }
@@ -323,7 +403,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             recName = "Download/Gimlistream/" + name;
             return new BufferedOutputStream(out, 1 << 20);
         }
-        File f = new File(getExternalFilesDir(Environment.DIRECTORY_MOVIES), name);
+        File dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES); // null when storage is unmounted
+        // Same-second restart would truncate the previous file (MediaStore on 29+ renames on its own).
+        File f = RecordingUtil.pickUnusedFile(dir, name);
         recName = f.getPath();
         return new BufferedOutputStream(new FileOutputStream(f), 1 << 20);
     }
@@ -333,10 +415,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         try {
             rec.close();
             toast("Saved " + recName);
-        } catch (IOException e) {
-            toast("Saving " + recName + " failed: " + e.getMessage());
+        } catch (Exception e) {
+            toast("Saving " + recName + " failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+        } finally {
+            rec = null;
         }
-        rec = null;
     }
 
     private void toast(String text) {
@@ -387,6 +470,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     /** Letterbox: scale the SurfaceView to the video's aspect ratio instead of stretching it. */
     private void fitVideo(int w, int h) {
+        videoW = w;
+        videoH = h;
         View root = findViewById(R.id.root);
         float scale = Math.min(root.getWidth() / (float) w, root.getHeight() / (float) h);
         video.setLayoutParams(new FrameLayout.LayoutParams(Math.round(w * scale), Math.round(h * scale), Gravity.CENTER));

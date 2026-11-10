@@ -15,6 +15,7 @@ jobs:
       - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-gnu
       - run: brew install mingw-w64
       - run: cargo test
+      - run: cargo clippy --all-targets -- -D warnings
       - run: ./bundle.sh
       - run: ./bundle-windows.sh
       - uses: actions/upload-artifact@v7
@@ -25,6 +26,24 @@ jobs:
         with:
           name: Gimlistream-windows
           path: dist/Gimlistream-windows.zip
+
+  windows-ctrl-c:
+    # T268: Ctrl-C must reach the GUI-subsystem exe (T224/T226). Reuses the cross-built artifact,
+    # so there is no second Windows build path. Cannot check the recording: no goggles in CI.
+    needs: desktop
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Gimlistream-windows
+      - name: Extract Windows build
+        shell: pwsh
+        run: Expand-Archive Gimlistream-windows.zip -DestinationPath smoke
+      - name: Ctrl-C from the launching console exits 0
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File .github/ctrl-c-smoke.ps1 -Exe smoke/Gimlistream-windows/gimlistream.exe
 
   android:
     runs-on: ubuntu-24.04
@@ -38,6 +57,8 @@ jobs:
         with:
           gradle-version: "9.9.0"
       - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" > /dev/null
+      - run: gradle --no-daemon -p android testDebugUnitTest
+      - run: javac -d /tmp/nal android/src/main/java/com/gimlistream/NalSplitter.java && java -ea -cp /tmp/nal com.gimlistream.NalSplitter
       - run: ./bundle-android.sh
       - uses: actions/upload-artifact@v7
         with:
