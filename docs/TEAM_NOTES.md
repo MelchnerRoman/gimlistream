@@ -40,9 +40,15 @@ docs/TEAM_NOTES.md                this file
 4. `stream()` writes the `RMVT` magic to endpoint OUT (re-sent on read timeouts, because the goggles stop streaming until poked), reads bulk IN, splits the byte stream at the last Annex B start code, keeps SPS/PPS, optionally writes raw `.h264` (`Gimlistream N.h264` in Movies / Videos / home), and decodes complete NALs with openh264 into the window. Watermark and red record dot are drawn into each frame.
 5. Diagnostics (`--diagnostics` subprocess): libusb device list, libusb debug log, and on macOS `ioreg` output. Shown in an osascript dialog on macOS, saved to Desktop and opened in Notepad on Windows.
 
+Hardening (T57, T58):
+- Stream buffer cap: `cap_stream` drops the buffer if it exceeds `MAX_STREAM_BUF` (8 MB) without yielding a start code, like `NalSplitter` does on Android. Unit-tested in `src/main.rs`.
+- `live()` reports USB enumeration errors separately from can't-open errors, so "can't list devices" is not shown as "goggles not openable".
+
 ### How the Android app works
 
 `MainActivity` opens the device through `UsbManager`, runs a worker thread that reads the same USB protocol, feeds `NalSplitter`, and pushes NALs into `MediaCodec` (AVC decoder) with the output drawn to a `SurfaceView`. The same MAGIC/endpoint layout as the desktop app is used (endpoint 0 = OUT, 1 = IN on interface 3, per the comment in `stream()`).
+
+`onResume` stops a stalled worker thread before starting a new one, so returning to the app does not leave two readers on the device.
 
 ## Protocol and hardware facts (keep in sync across desktop and Android)
 
@@ -74,7 +80,7 @@ docs/TEAM_NOTES.md                this file
   ```sh
   cd android/src/main/java && javac com/gimlistream/NalSplitter.java -d /tmp/nal-out && java -ea -cp /tmp/nal-out com.gimlistream.NalSplitter
   ```
-  It prints `NalSplitter ok` on success. CI runs it in the Android job of `build.yml`, before `bundle-android.sh`.
+  It prints `NalSplitter ok` on success. This check is CI-only for agents: the agent sandbox denies `javac` and `java`. CI runs it in the Android job of `build.yml`, before `bundle-android.sh`.
 - There is no hardware-free test for USB, decoding, or recording. Verify with real goggles (or Diagnostics output) on each platform.
 
 ## Observations (for planning, not yet changed)
