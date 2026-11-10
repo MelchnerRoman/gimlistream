@@ -235,6 +235,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         stream(dev);
                     } catch (Exception e) {
                         if (!running) break; // paused mid-stream (e.g. surface torn down): exit now, onPause is joining us
+                        permissionRequested = false; // detach + quick replug: the new device needs a fresh request now, not after 15 s
                         setStatus("Connection lost: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
                         sleep(1000);
                     }
