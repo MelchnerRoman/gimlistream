@@ -64,6 +64,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private Thread worker;
     private View menu;
     private Button recButton;
+    private int videoW, videoH; // UI thread only: last decoded size, 0 until known
 
     // Worker thread only: the open recording, and the latest SPS/PPS so a file started mid-stream is playable.
     private OutputStream rec;
@@ -78,6 +79,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         status = findViewById(R.id.status);
         video = findViewById(R.id.video);
         video.getHolder().addCallback(this);
+        // In-place resize (split-screen/freeform) doesn't recreate us, so re-letterbox on root size change.
+        findViewById(R.id.root).addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            if (videoW > 0 && (r - l != or - ol || b - t != ob - ot)) fitVideo(videoW, videoH);
+        });
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();
 
@@ -433,6 +438,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     /** Letterbox: scale the SurfaceView to the video's aspect ratio instead of stretching it. */
     private void fitVideo(int w, int h) {
+        videoW = w;
+        videoH = h;
         View root = findViewById(R.id.root);
         float scale = Math.min(root.getWidth() / (float) w, root.getHeight() / (float) h);
         video.setLayoutParams(new FrameLayout.LayoutParams(Math.round(w * scale), Math.round(h * scale), Gravity.CENTER));
