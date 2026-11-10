@@ -200,7 +200,9 @@ fn main() -> Res<()> {
 impl App {
     /// Start screen until a choice is made. Some(record?) starts the live view, None quits.
     fn menu(&mut self) -> Option<bool> {
-        self.window.set_title("Gimlistream");
+        if !self.quit_requested() {
+            self.window.set_title("Gimlistream"); // keep the final "saved <file>" report on quit
+        }
         let img: Vec<u32> = MENU
             .chunks_exact(3)
             .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]]))
@@ -770,6 +772,10 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     }
     if let Some((f, path)) = rec {
         let saved = finish_recording(f, &path);
+        // On quit the title outlives the window: don't claim the file just closed is still recording.
+        if app.quit_requested() {
+            app.recording = false;
+        }
         app.set_status(&saved);
         // live() overwrites the status on error, so carry the filename in the error too.
         err = err.map(|e| format!("{e} ({saved})").into());
@@ -780,16 +786,20 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
 /// Flushes the recording; only claims "saved" if the last buffered bytes really hit the disk.
 /// A file stopped before its first IDR has zero bytes: remove it and say so instead of "saved".
 fn finish_recording(mut f: std::io::BufWriter<std::fs::File>, path: &std::path::Path) -> String {
-    if let Err(e) = f.flush() {
-        return format!("saving {} failed: {e}", path.display());
-    }
-    let empty = f.get_ref().metadata().is_ok_and(|m| m.len() == 0);
-    drop(f); // close before removing, so Windows can delete it
-    if empty {
-        let _ = std::fs::remove_file(path);
-        return format!("no keyframe captured, nothing saved: {}", path.display());
-    }
-    format!("saved {}", path.display())
+    let msg = if let Err(e) = f.flush() {
+        format!("saving {} failed: {e}", path.display())
+    } else {
+        let empty = f.get_ref().metadata().is_ok_and(|m| m.len() == 0);
+        drop(f); // close before removing, so Windows can delete it
+        if empty {
+            let _ = std::fs::remove_file(path);
+            format!("no keyframe captured, nothing saved: {}", path.display())
+        } else {
+            format!("saved {}", path.display())
+        }
+    };
+    eprintln!("{msg}"); // stderr survives the window closing; the title is gone on quit
+    msg
 }
 
 enum ReadAction {
