@@ -262,6 +262,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (conn == null) {
             throw new IOException("can't open the goggles");
         }
+        sps = null;
+        pps = null; // don't start a new recording with the previous connection's parameter sets
         MediaCodec codec = null;
         try {
             Surface target = surface; // the field can go null at any time (onPause); don't configure the decoder with null
