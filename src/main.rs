@@ -623,7 +623,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     let (mut sps, mut pps) = (Vec::new(), Vec::new());
 
     app.set_status("streaming");
-    let mut err = None;
+    let mut err: Option<Box<dyn std::error::Error>> = None;
     while app.watching() {
         app.poll_ui();
         let read = handle.read_bulk(ep_in, &mut chunk, Duration::from_millis(100));
@@ -632,7 +632,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
             ReadAction::Poke => {
                 // Goggles stop streaming until poked again.
                 if let Err(e) = handle.write_bulk(ep_out, MAGIC, Duration::from_secs(2)) {
-                    err = Some(e);
+                    err = Some(e.into());
                     break;
                 }
                 app.window.update();
@@ -644,13 +644,14 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
             }
             // Don't `return` here: the recording below must still be flushed and reported.
             ReadAction::Fail => {
-                err = read.err();
+                err = read.err().map(Into::into);
                 break;
             }
         }
 
         let Some(cut) = last_start_code(&stream).filter(|&c| c > 0) else {
             cap_stream(&mut stream);
+            app.window.update();
             continue;
         };
         let complete: Vec<u8> = stream.drain(..cut).collect();
@@ -701,10 +702,17 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
                 if rec.is_some() {
                     draw_rec_dot(&mut frame, w, h);
                 }
-                app.window.update_with_buffer(&frame, w, h)?;
+                // Don't `?`: the recording must still be flushed and reported.
+                if let Err(e) = app.window.update_with_buffer(&frame, w, h) {
+                    err = Some(e.into());
+                    break;
+                }
             }
-            Ok(None) => {}
-            Err(e) => eprintln!("decode: {e}"), // corrupt NAL over the air link; keep going
+            Ok(None) => app.window.update(),
+            Err(e) => {
+                eprintln!("decode: {e}"); // corrupt NAL over the air link; keep going
+                app.window.update();
+            }
         }
     }
     if let Some((mut f, path)) = rec {
