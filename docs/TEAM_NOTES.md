@@ -158,7 +158,7 @@ Findings (none is a crash or a leak):
 
 Needs device checks (agents cannot run them): pause during REC then resume (expect one playable file per session, closed on pause); unplug during REC (expect file saved and "Waiting for goggles"); permission dialog during REC.
 
-Follow-ups: finding 2 (sps/pps reset) was applied in T157; the on-device lifecycle check is T159 (listed under "Needs human verification"). Findings 1 and 3 are not applied.
+Follow-ups: finding 2 (sps/pps reset) was applied in T157; the on-device lifecycle check is T159 (listed under "Needs human verification"). Finding 3 is not applied. Finding 1 is applied in T167 (idle "no goggles" sleep is now 10 x 100 ms and stops when `running` is false; the 2 s `bulkTransfer` pokes are unchanged). Not compiled here (no Android build available).
 
 ## T157: SPS/PPS reset at the start of each stream (Android)
 

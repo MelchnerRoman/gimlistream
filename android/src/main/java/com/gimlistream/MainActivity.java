@@ -215,7 +215,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 if (dev == null) {
                     permissionRequested = false;
                     setStatus("Waiting for goggles…\nConnect DJI FPV Goggles V1/V2 with a USB-C cable (OTG)");
-                    sleep(1000);
+                    for (int i = 0; i < 10 && running; i++) sleep(100); // short steps so onPause's join() isn't left waiting
                 } else if (!usb.hasPermission(dev)) {
                     setStatus("Allow Gimlistream to access the goggles");
                     // Re-ask every 15 s so a denied dialog doesn't need a replug.
