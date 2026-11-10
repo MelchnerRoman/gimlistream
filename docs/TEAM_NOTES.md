@@ -81,6 +81,7 @@ Hardening (T57, T58):
   cd android/src/main/java && javac com/gimlistream/NalSplitter.java -d /tmp/nal-out && java -ea -cp /tmp/nal-out com.gimlistream.NalSplitter
   ```
   It prints `NalSplitter ok` on success. This check is CI-only for agents: the agent sandbox denies `javac` and `java`. CI runs it in the Android job of `build.yml`, before `bundle-android.sh`.
+- Android `stream()` (T92): 20 consecutive `bulkTransfer` reads returning `< 0` throw `IOException` so `loop()` reopens the connection. `UsbDeviceConnection.bulkTransfer` returns -1 for timeouts too, so this also fires after ~2 s with no video (e.g. drone off), causing a harmless reconnect cycle. Not unit-tested (needs a USB connection); not compiled here either.
 - There is no hardware-free test for USB, decoding, or recording. Verify with real goggles (or Diagnostics output) on each platform.
 
 ## Observations (for planning, not yet changed)

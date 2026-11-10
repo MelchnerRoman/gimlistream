@@ -277,15 +277,21 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             boolean[] showing = {false};
             NalSplitter nals = new NalSplitter();
             byte[] chunk = new byte[131072];
+            int errors = 0;
             while (running && live && surface != null) {
                 int n = conn.bulkTransfer(in, chunk, chunk.length, 100);
                 if (n <= 0) {
                     if (findGoggles() == null) {
                         throw new IOException("goggles disconnected");
                     }
+                    // Android reports timeouts and errors both as -1, so this also trips after ~2 s of silence; loop() reopens.
+                    if (n < 0 && ++errors >= 20) {
+                        throw new IOException("repeated USB read errors");
+                    }
                     conn.bulkTransfer(out, MAGIC, MAGIC.length, 2000); // goggles stop streaming until poked again
                     continue;
                 }
+                errors = 0;
                 nals.add(chunk, n, (buf, off, len) -> {
                     record(buf, off, len);
                     queue(c, buf, off, len);
