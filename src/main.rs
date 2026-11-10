@@ -814,6 +814,21 @@ mod tests {
     }
 
     #[test]
+    fn finish_recording_flushes_buffered_tail() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!(
+            "gimlistream-flush-test-{}.h264",
+            std::process::id()
+        ));
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        f.write_all(b"\x00\x00\x01\x65tail").unwrap();
+        let msg = super::finish_recording(f, &path);
+        assert!(msg.starts_with("saved"), "{msg}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"\x00\x00\x01\x65tail");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn read_actions() {
         use super::{read_action as a, ReadAction as R};
         assert!(matches!(a(&Ok(5)), R::Data(5)));
