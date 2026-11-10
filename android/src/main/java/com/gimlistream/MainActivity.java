@@ -198,6 +198,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     /** Worker thread: find goggles, get permission, stream; retry on anything going wrong. */
     private void loop() {
         boolean permissionRequested = false;
+        long lastRequestMs = 0;
         while (running) {
             if (!live) {
                 sleep(100);
@@ -210,8 +211,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 sleep(1000);
             } else if (!usb.hasPermission(dev)) {
                 setStatus("Allow Gimlistream to access the goggles");
-                if (!permissionRequested) {
+                // Re-ask every 15 s so a denied dialog doesn't need a replug.
+                long now = System.currentTimeMillis();
+                if (!permissionRequested || now - lastRequestMs > 15000) {
                     permissionRequested = true;
+                    lastRequestMs = now;
                     // Result is picked up by polling hasPermission(), so no receiver is needed.
                     Intent i = new Intent("com.gimlistream.USB_PERMISSION").setPackage(getPackageName());
                     usb.requestPermission(dev, PendingIntent.getBroadcast(this, 0, i, PendingIntent.FLAG_MUTABLE));
