@@ -747,6 +747,24 @@ mod tests {
     }
 
     #[test]
+    fn capped_stream_stays_bounded_and_recovers() {
+        // Feed start-code-free junk like stream() does: buffer never exceeds cap + one chunk.
+        let (mut stream, chunk) = (Vec::new(), vec![7u8; 1 << 20]);
+        for _ in 0..20 {
+            stream.extend_from_slice(&chunk);
+            if super::last_start_code(&stream).filter(|&c| c > 0).is_none() {
+                super::cap_stream(&mut stream);
+            }
+            assert!(stream.len() <= super::MAX_STREAM_BUF);
+        }
+        // After trimming, new NALs are still found and the kept tail starts at a start code.
+        stream.extend_from_slice(&[0, 0, 1, 0x67, 1, 0, 0, 1, 0x68]);
+        let cut = super::last_start_code(&stream).unwrap();
+        assert_eq!(cut, stream.len() - 4);
+        assert_eq!(&stream[cut..], &[0, 0, 1, 0x68]);
+    }
+
+    #[test]
     fn splits_at_last_start_code() {
         let buf = [0, 0, 0, 1, 0x67, 9, 0, 0, 1, 0x68, 7];
         assert_eq!(super::last_start_code(&buf), Some(6));
