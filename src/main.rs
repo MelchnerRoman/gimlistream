@@ -148,6 +148,22 @@ fn first_idr(buf: &[u8]) -> Option<usize> {
     start_codes(buf).into_iter().find(|&s| buf.get(s + 3).is_some_and(|t| t & 0x1f == 5))
 }
 
+/// Bytes to write for one complete-NAL chunk, or `None` while still waiting for the first IDR.
+/// A file must start at a keyframe: drop everything before the first IDR and prepend the latest
+/// SPS/PPS so the file is decodable. Once the keyframe has been written, write chunks whole.
+fn recording_piece(
+    waiting_idr: bool,
+    sps: &[u8],
+    pps: &[u8],
+    complete: &[u8],
+) -> Option<Vec<u8>> {
+    if !waiting_idr {
+        return Some(complete.to_vec());
+    }
+    let off = first_idr(complete)?;
+    Some([sps, pps, &complete[off..]].concat())
+}
+
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 fn main() -> Res<()> {
@@ -743,23 +759,19 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         keep_sps_pps(&complete, &mut sps, &mut pps);
         if let Some((f, path)) = &mut rec {
             // A file must start at a keyframe: skip everything before the first IDR, then prepend SPS/PPS.
-            let written = match (rec_wait_idr, first_idr(&complete)) {
-                (false, _) => f.write_all(&complete),
-                (true, None) => Ok(()),
-                (true, Some(off)) => {
+            if let Some(piece) = recording_piece(rec_wait_idr, &sps, &pps, &complete) {
+                let waiting = rec_wait_idr;
+                let written = f.write_all(&piece);
+                if written.is_ok() && waiting {
                     rec_wait_idr = false;
-                    let w = f.write_all(&[sps.as_slice(), &pps, &complete[off..]].concat());
-                    if w.is_ok() {
-                        app.set_status(&format!("recording to {}", path.display()));
-                    }
-                    w
+                    app.set_status(&format!("recording to {}", path.display()));
                 }
-            };
-            if let Err(e) = written {
-                let msg = format!("recording to {} stopped: {e}", path.display());
-                rec = None;
-                app.recording = false;
-                app.set_status(&msg);
+                if let Err(e) = written {
+                    let msg = format!("recording to {} stopped: {e}", path.display());
+                    rec = None;
+                    app.recording = false;
+                    app.set_status(&msg);
+                }
             }
         }
         match decoder.decode(&complete) {
@@ -863,6 +875,25 @@ mod tests {
         assert_eq!(first_idr(&[0, 0, 1, 0x65, 9]), Some(0));
         assert_eq!(first_idr(&[0, 0, 1, 0x41, 9, 0, 0, 1, 0x67, 9]), None);
         assert_eq!(first_idr(&[]), None);
+    }
+
+    #[test]
+    fn recording_starts_at_first_idr() {
+        use super::recording_piece;
+        let (sps, pps) = (&[0, 0, 1, 0x67, 1][..], &[0, 0, 1, 0x68, 2][..]);
+        let no_idr = [0, 0, 1, 0x41, 9, 0, 0, 1, 0x67, 9];
+        assert_eq!(recording_piece(true, sps, pps, &no_idr), None);
+        let with_idr = [0, 0, 1, 0x41, 9, 0, 0, 1, 0x65, 9];
+        assert_eq!(
+            recording_piece(true, sps, pps, &with_idr),
+            Some([sps, pps, &with_idr[5..]].concat()),
+            "pre-IDR bytes dropped, SPS/PPS prepended"
+        );
+        assert_eq!(
+            recording_piece(false, sps, pps, &with_idr),
+            Some(with_idr.to_vec()),
+            "after the first IDR the chunk is written whole"
+        );
     }
 
     #[test]
