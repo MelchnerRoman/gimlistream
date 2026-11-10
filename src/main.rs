@@ -256,7 +256,12 @@ impl App {
             let handle = match open_goggles(&dev) {
                 Ok(h) => h,
                 Err(e) => {
-                    self.set_status(&format!("found goggles but can't open them: {e}"));
+                    let hint = match e.downcast_ref::<rusb::Error>() {
+                        Some(rusb::Error::Access) => " (permission denied)",
+                        Some(rusb::Error::Busy) => " (in use by another app?)",
+                        _ => "",
+                    };
+                    self.set_status(&format!("found goggles but can't open them: {e}{hint}"));
                     #[cfg(windows)]
                     if !std::mem::replace(&mut self.driver_prompted, true) {
                         offer_driver_install();
@@ -363,7 +368,7 @@ extern "system" fn log_cb(
 ) {
     let msg = unsafe { std::ffi::CStr::from_ptr(msg as *const std::ffi::c_char) };
     LOG.lock()
-        .unwrap()
+        .unwrap_or_else(|p| p.into_inner()) // never panic inside an extern callback
         .push(msg.to_string_lossy().trim_end().to_string());
 }
 
