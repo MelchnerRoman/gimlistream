@@ -151,7 +151,7 @@ fn main() -> Res<()> {
         return Ok(());
     }
     // Window first: when launched from Finder there's no terminal, so the title is the status line.
-    let mut window = Window::new(
+    let mut window = match Window::new(
         "Gimlistream",
         1280,
         720,
@@ -160,7 +160,14 @@ fn main() -> Res<()> {
             scale_mode: ScaleMode::AspectRatioStretch, // letterbox instead of distorting on resize
             ..Default::default()
         },
-    )?;
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            // No terminal when launched from Finder/Explorer: stderr alone is invisible.
+            show_report(&format!("Gimlistream could not open its window:\n{e}"));
+            return Err(e.into());
+        }
+    };
     window.set_target_fps(0); // pace on USB reads, not the display
     let mut app = App {
         window,
