@@ -213,7 +213,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 try {
                     stream(dev);
                 } catch (Exception e) {
-                    setStatus("Connection lost: " + e.getMessage() + "\nRetrying…");
+                    setStatus("Connection lost: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
                     sleep(1000);
                 }
             }
@@ -287,10 +287,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
         } finally {
             stopRecording();
-            if (codec != null) {
-                codec.release();
+            try {
+                if (codec != null) codec.release();
+            } finally {
+                conn.close(); // always release the USB connection, even if codec.release() throws
             }
-            conn.close();
         }
     }
 
@@ -311,6 +312,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (rec != null) rec.write(buf, off, len);
         } catch (IOException e) {
             toast("Recording failed: " + e.getMessage());
+            try {
+                if (rec != null) rec.close(); // release the file/MediaStore handle
+            } catch (IOException ignored) {
+            }
             rec = null;
             runOnUiThread(() -> setRecording(false));
         }
