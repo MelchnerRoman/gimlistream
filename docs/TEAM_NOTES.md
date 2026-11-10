@@ -1,6 +1,6 @@
 # Gimlistream: team notes
 
-Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on macOS, Windows and Android. Current version 0.4.0 (git `a76237e`).
+Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on macOS, Windows and Android. Current version 0.4.0 (release commit `a76237e`; this tree is at `ca832b7`, which adds T182, T189, T193 and T195 on top of that release).
 
 ## Stack
 
@@ -16,7 +16,7 @@ Assets are generated once and committed: `assets/AppIcon.icns`, `assets/icon.ico
 ## Structure
 
 ```
-src/main.rs                       whole desktop app (901 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
+src/main.rs                       whole desktop app (946 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
 build.rs                          Windows only: embeds assets/icon.ico via windres
 Cargo.toml / Cargo.lock          single package "gimlistream" 0.4.0
 bundle.sh                         macOS universal .app -> dist/Gimlistream.zip
@@ -25,8 +25,12 @@ bundle-android.sh                 gradle assembleRelease -> dist/Gimlistream.apk
 android/
   build.gradle.kts                applicationId com.gimlistream, minSdk 26, targetSdk/compileSdk 37, versionName/versionCode derived from Cargo.toml (versionCode = major*10000 + minor*100 + patch, 400 for 0.4.0)
   src/main/java/com/gimlistream/
-    MainActivity.java             USB worker thread, MediaCodec decode to SurfaceView, recording (468 lines)
+    MainActivity.java             USB worker thread, MediaCodec decode to SurfaceView, recording (476 lines)
     NalSplitter.java              Annex B NAL splitter, plain Java, self-check in main()
+    RecordingUtil.java            recording file naming/collision + close-after-failure helpers, plain Java
+  src/test/java/com/gimlistream/
+    NalSplitterTest.java          JUnit test for NalSplitter (CI-only for agents)
+    RecordingUtilTest.java        JUnit tests for RecordingUtil (CI-only for agents)
   src/main/res/                     layout, icons, device_filter.xml (USB VID/PID filter), cat.jpg/watermark.png
 assets/                           icons, menu/watermark buffers, Windows README + generators
 docs/TEAM_NOTES.md                this file
@@ -37,21 +41,27 @@ docs/TEAM_NOTES.md                this file
 1. `main()` opens a 1280x720 minifb window, then loops `menu()` -> `live()`.
 2. Menu: Live view, Record, Open recordings, Diagnostics, Quit. Keys (Enter/Space/L, R, O, D, Esc/Q) or clicks on the baked-in `MENU` image (`MENU_BUTTONS` x positions).
 3. `live()` finds the device by VID `0x2ca3` / PID `0x001f`, claims interface 3, and calls `stream()`. It retries every second while waiting, on open errors, or after stream errors.
-4. `stream()` writes the `RMVT` magic to endpoint OUT (re-sent on read timeouts, because the goggles stop streaming until poked), reads bulk IN, splits the byte stream at the last Annex B start code, keeps SPS/PPS, optionally writes raw `.h264` (`Gimlistream N.h264` in Movies / Videos / home), and decodes complete NALs with openh264 into the window. Watermark and red record dot are drawn into each frame.
-5. Diagnostics (`--diagnostics` subprocess): libusb device list, libusb debug log, and on macOS `ioreg` output. Shown in an osascript dialog on macOS, saved to Desktop and opened in Notepad on Windows.
+4. `stream()` writes the `RMVT` magic to endpoint OUT (re-sent on read timeouts, because the goggles stop streaming until poked), reads bulk IN, splits the byte stream at the last Annex B start code, keeps SPS/PPS, optionally writes raw `.h264` (`Gimlistream N.h264` in Movies / Videos / home), and decodes complete NALs with openh264 into the window. A recording opened by the R toggle first drops complete NALs until `first_idr()` finds a type-5 slice, then writes the latest SPS/PPS plus the rest of that NAL (T182), so every file starts at a keyframe. Watermark and red record dot are drawn into each frame.
+5. Diagnostics (`--diagnostics` subprocess): libusb device list, libusb debug log, and on macOS `ioreg` output. Shown in an osascript dialog on macOS, saved to Desktop and opened in Notepad on Windows. The subprocess and the report run on a background thread (T195), so the stream and any open recording keep going while the report is produced.
 
-Hardening (T57, T58, T140, T177, T178):
+Hardening (T57, T58, T140, T177, T178, T182, T195):
 - Responsive window (T140): `stream()` calls `app.window.update()` when a NAL yields no frame (`Ok(None)`) or fails to decode, so the window keeps pumping events (close, Esc, clicks) even when nothing decodes. A failing `update_with_buffer` no longer returns via `?`: it is stored in `err` and the loop breaks, so an open recording is still flushed and reported. `err` is now `Option<Box<dyn Error>>`. Not hardware-verified.
 - Stream buffer cap: `cap_stream` drops the buffer if it exceeds `MAX_STREAM_BUF` (8 MB) without yielding a start code, like `NalSplitter` does on Android. Unit-tested in `src/main.rs`.
 - `live()` reports USB enumeration errors separately from can't-open errors, so "can't list devices" is not shown as "goggles not openable". Open errors also get a hint from the `rusb::Error` kind: `Access` adds "(permission denied)", `Busy` adds "(in use by another app?)" (T177). Windows shows the Zadig prompt once per run.
 - `find_goggles()` skips devices whose descriptor cannot be read instead of aborting the scan (T125).
 - Decode errors (T178): a `decode()` error is printed to stderr and the NAL is skipped; `Ok(None)` and a zero-size frame (`w == 0 || h == 0`, from a corrupt SPS) draw nothing but still pump the window, so the stream keeps going and the window stays responsive. The log lock in the libusb callback uses `unwrap_or_else(into_inner)` so it cannot panic inside an `extern` callback (T177). Not hardware-verified.
+- Recording starts at a keyframe (T182): opening a file sets `rec_wait_idr = true`; complete NALs are dropped until `first_idr()` finds a NAL type 5, then the latest SPS/PPS and that NAL from its start code onward are written, and everything after is written normally. Before this, the file started wherever the user pressed R, so players showed black/garbage until the next IDR. Two consequences: an open recording that never sees an IDR stays 0 bytes (the REC dot is shown, nothing is written), and the SPS/PPS written are the latest ones seen before that IDR, not the ones captured at file open. `first_idr` is unit-tested (`finds_idr_offset`). The same commit also made file creation race-safe: `create_new` instead of `File::create`, retrying once under a new `recording_path()` name on `AlreadyExists` (previously a name taken between the `exists()` check and the create was truncated). Not hardware-verified.
+- Diagnostics do not stall the stream (T195): `diagnose()` spawns the `--diagnostics` subprocess and the report/dialog on a thread (handle kept in `App.diagnosing`) instead of running inline in `poll_ui()`. `stream()` keeps reading USB and writing the recording while the report is generated and shown. Only one report runs at a time: pressing D while the previous thread is still running is ignored; a finished handle is replaced on the next press (never joined). Not hardware-verified beyond reading the code.
 
 ### How the Android app works
 
 `MainActivity` opens the device through `UsbManager`, runs a worker thread that reads the same USB protocol, feeds `NalSplitter`, and pushes NALs into `MediaCodec` (AVC decoder) with the output drawn to a `SurfaceView`. The same MAGIC/endpoint layout as the desktop app is used (endpoint 0 = OUT, 1 = IN on interface 3, per the comment in `stream()`).
 
 `onResume` stops a stalled worker thread before starting a new one, so returning to the app does not leave two readers on the device.
+
+USB attach/detach and permission (T189, read-only review): `loop()` keeps a local `permissionRequested`/`lastRequestMs`. When a stream throws (unplug or any connection error) it clears `permissionRequested` before retrying, so a detach followed by a quick replug asks for USB permission immediately instead of staying silent until the 15 s re-ask window: the replugged device is a new `UsbDevice` that has no permission, and the stale flag/last-request time would otherwise suppress the prompt. When no goggles are found the flag is also cleared, and `requestPermission` is only called when `!permissionRequested || now - lastRequestMs > 15000`. Unplug is still detected by polling (a `bulkTransfer` read returns `<= 0` and `findGoggles() == null` throws `"goggles disconnected"`), not by a `USB_DEVICE_DETACHED` receiver. No receiver exists at all; the permission result is polled through `hasPermission()`, so there is nothing to register or unregister. Not compiled or run here.
+
+Recording helpers (T193): the file-naming/collision logic moved out of `MainActivity.openRecording()` into `RecordingUtil.pickUnusedFile(dir, name)`: returns `dir/name`, else `base (1).ext`, `base (2).ext`, …; throws `IOException` when `dir` is null (unmounted storage) or cannot be created; the extension is split on the last dot, so a name without one still works. `RecordingUtil.closeAfterFailure(rec)` closes a failed stream without throwing and returns `false` (the new "recording" flag), which `record()` now assigns. `MainActivity` uses both. `RecordingUtilTest` (JUnit 4 `TemporaryFolder`) covers no-collision, numbered suffixes, null dir and a regular file passed as the dir; `closeAfterFailure` was already covered. Same caveat as `NalSplitterTest`: **CI-only for agents** (`gradle --no-daemon -p android testDebugUnitTest`), not run locally.
 
 ## Protocol and hardware facts (keep in sync across desktop and Android)
 
@@ -80,13 +90,14 @@ Hardening (T57, T58, T140, T177, T178):
 
 ## How to test
 
-- Desktop unit tests: `cargo test`. Covers `last_start_code`, `start_codes`, `menu_button` hit-testing and edges (`menu_button_edges`), `read_actions`, the stream buffer cap (`caps_stream_without_start_code`, `capped_stream_stays_bounded_and_recovers`), the REC dot (`rec_dot_is_drawn_in_corner_only`), the watermark blend, and the Annex B handling (`split_handles_chunk_boundaries`, `keeps_latest_sps_pps` exercising `keep_sps_pps`). These run in CI on every push and PR.
+- Desktop unit tests: `cargo test`. Covers `last_start_code`, `start_codes`, `menu_button` hit-testing and edges (`menu_button_edges`), `read_actions`, the stream buffer cap (`caps_stream_without_start_code`, `capped_stream_stays_bounded_and_recovers`), the REC dot (`rec_dot_is_drawn_in_corner_only`), the watermark blend, the first-IDR search (`finds_idr_offset`, added in T182) and the Annex B handling (`split_handles_chunk_boundaries`, `keeps_latest_sps_pps` exercising `keep_sps_pps`). These run in CI on every push and PR.
 - Android: the `NalSplitter` self-check is a plain `main()`, not a JUnit test. Run it with:
   ```sh
   cd android/src/main/java && javac com/gimlistream/NalSplitter.java -d /tmp/nal-out && java -ea -cp /tmp/nal-out com.gimlistream.NalSplitter
   ```
   It prints `NalSplitter ok` on success. This check is CI-only for agents: the agent sandbox denies `javac` and `java`. CI runs it in the Android job of `build.yml`, before `bundle-android.sh`.
 - Android unit test (JUnit, `android/src/test/java/com/gimlistream/NalSplitterTest.java`): `dropsGarbageOverMaxBufferThenSplitsValidNals` feeds 9 MB without a start code (over the 8 MB cap), expects nothing emitted and no throw, then checks that SPS/PPS still split correctly. **CI-verified only**: CI runs `gradle --no-daemon -p android testDebugUnitTest` in the Android job; agents cannot run it, and it was not run locally.
+- Android unit test (JUnit, `android/src/test/java/com/gimlistream/RecordingUtilTest.java`, extended in T193): `RecordingUtil.pickUnusedFile` keeps the name when free, returns `a (1).h264` / `a (2).h264` on collisions, and throws `IOException` for a null dir or a regular file used as the dir (`TemporaryFolder` rule); `closeAfterFailure` still covers the runtime-exception-on-close case. **CI-only for agents** (same `testDebugUnitTest` step); not run locally.
 - Android error handling (T123, not compiled or run here): `record()` catches `IOException | RuntimeException` (MediaStore can throw `SecurityException`/`IllegalArgumentException`), closes `rec`, sets `rec = null` and `recording = false` directly (so the next NAL does not retry `openRecording()`), then resets the UI via `runOnUiThread`. `loop()` has an outer `catch (RuntimeException e)` around the whole iteration: it logs, shows "Error: ... Retrying…", sleeps 1 s and keeps the worker alive (e.g. `SecurityException` from USB calls); it exits instead if `running` is false.
 - Android recording close hardening (T137, T151; not compiled or run here): `record()`/`stopRecording()` catch `Exception` (not just `IOException`) when closing `rec`, so a `RuntimeException` cannot escape; `rec = null` moved into a `finally`, and toasts fall back to the exception class name when `getMessage()` is null. T151: when `stream()` ends (error, disconnect, stop) while `recording` is true, it sets `recording = false` and resets the REC button via `runOnUiThread(() -> setRecording(false))`, so the UI matches the closed file. Both landed.
 - Android `stream()` (T92): 20 consecutive `bulkTransfer` reads returning `< 0` throw `IOException("repeated USB read errors")` so `loop()` reopens the connection (the counter resets on a successful read; a failed `RMVT` poke write is still ignored on Android). `UsbDeviceConnection.bulkTransfer` returns -1 for timeouts too, so this also fires after ~2 s with no video (e.g. drone off), causing a harmless reconnect cycle. Not unit-tested (needs a USB connection); not compiled here either.
@@ -97,8 +108,8 @@ Hardening (T57, T58, T140, T177, T178):
 1. The version has a single source, `Cargo.toml` (`version = "0.4.0"`). `bundle.sh` reads it for `CFBundleShortVersionString`, and `android/build.gradle.kts` parses it for `versionName` and derives `versionCode` as major*10000 + minor*100 + patch (0.4.0 gives 400, replacing the earlier hard-coded 4). To release a new version, change only `Cargo.toml` (plus the "Current version" header at the top of this file, which is updated by hand); `Cargo.lock` follows on the next cargo build.
 2. CI runs `cargo test`, the Android JUnit test (`gradle ... testDebugUnitTest`) and the `NalSplitter` `main()` self-check, all in `build.yml`.
 3. Android release builds are signed with the debug key (marked `ponytail:` in `build.gradle.kts`). The macOS build is ad-hoc signed (also marked `ponytail:`). Both verified in T51. Both mean installers show security warnings. The README covers them (T54): Mac Gatekeeper (right-click → Open, described as ad-hoc signed), Android unknown-sources and Play Protect prompts, and Windows SmartScreen (More info → Run anyway).
-4. `main.rs` is a single 901-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
-5. Cargo verified in T186 (macOS): `cargo test` ran 10 tests, 10 passed, 0 failed; `cargo clippy` reported no warnings or errors. The test set is the same as T91 below (none added since T91). T91: `cargo test` ran 10 tests, 10 passed, 0 failed, 0 ignored (`capped_stream_stays_bounded_and_recovers`, `finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `menu_button_edges`, `read_actions`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `rec_dot_is_drawn_in_corner_only`, `caps_stream_without_start_code`, `watermark_blends_into_bottom_right`). `cargo build --release` last verified in T40 (success, about 6s). Neither command printed any warnings or errors. `cargo clippy` (T49): clean, 0 warnings.
+4. `main.rs` is a single 946-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
+5. Cargo verified in T204 (macOS): `cargo test` ran 11 tests, 11 passed, 0 failed; `cargo clippy` was last run in T186 with no warnings or errors. The set is the T91 ten plus `finds_idr_offset` (T182). T91: `cargo test` ran 10 tests, 10 passed, 0 failed, 0 ignored (`capped_stream_stays_bounded_and_recovers`, `finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `menu_button_edges`, `read_actions`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `rec_dot_is_drawn_in_corner_only`, `caps_stream_without_start_code`, `watermark_blends_into_bottom_right`). `cargo build --release` last verified in T40 (success, about 6s). Neither command printed any warnings or errors. `cargo clippy` (T49): clean, 0 warnings.
 
 ### Desktop unplug / replug review (T94)
 
@@ -124,8 +135,11 @@ Ruled out (checked, no change proposed): the `stream()` poke/retry paths and the
 
 Agent shells can't run gradle or adb, so these have never been run by agents:
 
-- `gradle --no-daemon -p android testDebugUnitTest` (NalSplitterTest, including the T121 overflow test once re-added in T139) and `gradle :android:assembleDebug`.
+- `gradle --no-daemon -p android testDebugUnitTest` (`NalSplitterTest` plus `RecordingUtilTest` from T193) and `gradle :android:assembleDebug`.
 - On-device check of the T124 in-place resize re-fit (split-screen/freeform resize should re-letterbox the video).
+- Desktop, T182 (first-IDR recording start): start a recording mid-GOP (press R a second or more into the stream, not right at connect) and confirm with a real player that the `.h264` plays from its first frame (from the keyframe), not black/garbage. Expected: the file is shorter than the time R was on (pre-IDR NALs are dropped), and the player shows video immediately on open. Also check that if R is pressed and the goggles stop sending before any IDR arrives, the file is 0 bytes and stopping the recording still reports `saved <path>`.
+- Desktop, T195 (diagnostics while streaming): press D while the stream is running and recording; the window should keep updating and the REC file keep growing while the report subprocess runs and the dialog is up. Pressing D again while a report is still open should do nothing (one report at a time). Confirm the report still contains the correct status line.
+- On-device, T189 (USB detach/replug permission): with the goggles streaming, unplug and replug quickly (within 15 s). Expected: the permission dialog appears immediately on replug instead of streaming staying silent until the 15 s re-ask; after allowing, the stream resumes. Also confirm a plain unplug still shows "Connection lost … Retrying…" then "Waiting for goggles…".
 - On-device lifecycle check (T159, from T156). Expected results, with the goggles connected:
   - Pause during REC, then resume: one playable file per session, closed on pause.
   - Unplug during REC: file saved, and the screen shows "Waiting for goggles".
@@ -136,7 +150,7 @@ The CI Android unit-test step is the only automated check.
 ## Verification status of these notes
 
 - Read every source, script, workflow and build file listed above.
-- Ran `cargo test` in T186 (10 passed, 0 failed) and `cargo build --release` in T40 (success), with no warnings or errors. See Observation 5.
+- Ran `cargo test` in T204 (11 passed, 0 failed) and `cargo build --release` in T40 (success), with no warnings or errors. See Observation 5.
 - Ran `cargo clippy` in T186: no warnings or errors (also clean in T49).
 - Bundle scripts (T52): still never executed. They are `sh` scripts needing lipo, codesign, ditto, mingw, curl, zip and gradle, and agents may only run npm/node/cargo. Checked by reading only: every file they reference exists (`assets/AppIcon.icns`, `assets/README-windows.txt`, `android/build.gradle.kts`); the README commands and output paths match the scripts; `build.yml` runs all three scripts with the same rustup targets and mingw install the scripts list; the version regex in `bundle.sh` matches `version = "0.4.0"` in `Cargo.toml`; `build.gradle.kts` parses that version for `versionName`/`versionCode`. Unverified: that the scripts actually succeed, the Zadig SHA-256 and URL, the static-link DLL check, the APK output filename `gimlistream-release.apk`, and the codesign/zip output. CI is the only place they run.
 - Did not run the Android build; it remains unverified. The Android `NalSplitter` self-check and `NalSplitterTest` cannot be run by agents (no javac/java/gradle in their shell); the Android job in `build.yml` runs them and is the source of truth. The commands above are taken from the README, the scripts and CI.
