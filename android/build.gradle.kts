@@ -2,6 +2,10 @@ plugins {
     id("com.android.application") version "9.5.1"
 }
 
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+}
+
 android {
     namespace = "com.gimlistream"
     compileSdk = 37
