@@ -806,23 +806,35 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     err.map_or(Ok(()), Err)
 }
 
-/// Flushes the recording; only claims "saved" if the last buffered bytes really hit the disk.
+/// Flushes the recording; only claims "saved" if the last buffered bytes really hit the disk
+/// and the file's length could be read back.
 /// A file stopped before its first IDR has zero bytes: remove it and say so instead of "saved".
 fn finish_recording(mut f: std::io::BufWriter<std::fs::File>, path: &std::path::Path) -> String {
     let msg = if let Err(e) = f.flush() {
         format!("saving {} failed: {e}", path.display())
     } else {
-        let empty = f.get_ref().metadata().is_ok_and(|m| m.len() == 0);
+        let len = f.get_ref().metadata().map(|m| m.len());
         drop(f); // close before removing, so Windows can delete it
-        if empty {
-            let _ = std::fs::remove_file(path);
-            format!("no keyframe captured, nothing saved: {}", path.display())
-        } else {
-            format!("saved {}", path.display())
-        }
+        recording_status(len, path)
     };
     eprintln!("{msg}"); // stderr survives the window closing; the title is gone on quit
     msg
+}
+
+/// Status line for a flushed recording. `len` is the file length read back after the flush;
+/// an `Err` means it could not be verified, so "saved" must not be claimed.
+fn recording_status(len: std::io::Result<u64>, path: &std::path::Path) -> String {
+    match len {
+        Err(e) => format!(
+            "saving {} failed: could not verify the file: {e}",
+            path.display()
+        ),
+        Ok(0) => {
+            let _ = std::fs::remove_file(path);
+            format!("no keyframe captured, nothing saved: {}", path.display())
+        }
+        Ok(_) => format!("saved {}", path.display()),
+    }
 }
 
 enum ReadAction {
@@ -884,6 +896,18 @@ mod tests {
         assert!(msg.starts_with("saved"), "{msg}");
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 4);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn unverifiable_recording_is_not_reported_as_saved() {
+        let path =
+            std::env::temp_dir().join(format!("gimlistream-t251-{}.h264", std::process::id()));
+        let msg = super::recording_status(
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            &path,
+        );
+        assert!(msg.contains("could not verify"), "{msg}");
+        assert!(!msg.starts_with("saved"), "{msg}");
     }
 
     #[test]
