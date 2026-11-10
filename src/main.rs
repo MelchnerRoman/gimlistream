@@ -717,7 +717,10 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     }
     if let Some((mut f, path)) = rec {
         let _ = f.flush();
-        app.set_status(&format!("saved {}", path.display()));
+        let saved = format!("saved {}", path.display());
+        app.set_status(&saved);
+        // live() overwrites the status on error, so carry the filename in the error too.
+        err = err.map(|e| format!("{e} ({saved})").into());
     }
     err.map_or(Ok(()), Err)
 }
