@@ -18,6 +18,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 import android.window.OnBackInvokedDispatcher;
 import android.view.Gravity;
@@ -288,13 +289,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             byte[] chunk = new byte[131072];
             int errors = 0;
             while (running && live && surface != null) {
+                long t0 = SystemClock.elapsedRealtime();
                 int n = conn.bulkTransfer(in, chunk, chunk.length, 100);
                 if (n <= 0) {
                     if (findGoggles() == null) {
                         throw new IOException("goggles disconnected");
                     }
-                    // Android reports timeouts and errors both as -1, so this also trips after ~2 s of silence; loop() reopens.
-                    if (n < 0 && ++errors >= 20) {
+                    // Android reports timeouts and errors both as -1; only a -1 that returns well before the 100 ms timeout is a real error.
+                    if (n < 0 && SystemClock.elapsedRealtime() - t0 < 50 && ++errors >= 20) {
                         throw new IOException("repeated USB read errors");
                     }
                     conn.bulkTransfer(out, MAGIC, MAGIC.length, 2000); // goggles stop streaming until poked again
