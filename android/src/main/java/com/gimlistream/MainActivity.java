@@ -223,6 +223,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                 try {
                     stream(dev);
                 } catch (Exception e) {
+                    if (!running) break; // paused mid-stream (e.g. surface torn down): exit now, onPause is joining us
                     setStatus("Connection lost: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
                     sleep(1000);
                 }
@@ -246,6 +247,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         }
         MediaCodec codec = null;
         try {
+            Surface target = surface; // the field can go null at any time (onPause); don't configure the decoder with null
+            if (target == null) {
+                return;
+            }
             if (dev.getInterfaceCount() <= IFACE) {
                 throw new IOException("goggles have no video interface");
             }
@@ -270,7 +275,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (Build.VERSION.SDK_INT >= 30) {
                 format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
             }
-            codec.configure(format, surface, null, 0);
+            codec.configure(format, target, null, 0);
             codec.start();
 
             MediaCodec c = codec;
