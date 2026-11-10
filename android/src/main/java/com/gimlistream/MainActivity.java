@@ -70,6 +70,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     // Worker thread only: the open recording, and the latest SPS/PPS so a file started mid-stream is playable.
     private OutputStream rec;
     private String recName;
+    private boolean recWaiting; // worker thread only: REC is on and the "waiting for keyframe" status is showing
     private byte[] sps, pps;
 
     @Override
@@ -301,7 +302,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             codec.start();
 
             MediaCodec c = codec;
-            boolean[] showing = {false};
+            boolean showing = false;
             NalSplitter nals = new NalSplitter();
             byte[] chunk = new byte[131072];
             int errors = 0;
@@ -327,9 +328,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         record(buf, off, len);
                         queue(c, buf, off, len);
                     });
-                    if (drain(c) && !showing[0]) {
-                        showing[0] = true;
-                        setStatus(null);
+                    if (drain(c) && !showing) {
+                        showing = true;
+                        if (!recWaiting) setStatus(null); // don't hide "waiting for keyframe" if REC was pressed before the first frame
                     }
                 }
             }
@@ -337,6 +338,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             stopRecording();
             if (recording) { // stream ended (error/disconnect/stop) mid-recording: keep the REC button in sync with the closed file
                 recording = false;
+                if (recWaiting) {
+                    recWaiting = false;
+                    setStatus(null); // no IDR arrived, so no file exists and "waiting for keyframe" is stale
+                }
                 runOnUiThread(() -> setRecording(false));
             }
             try {
@@ -353,13 +358,26 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         if (type == 7) sps = Arrays.copyOfRange(buf, off, off + len);
         if (type == 8) pps = Arrays.copyOfRange(buf, off, off + len);
         try {
-            if (recording && rec == null) {
+            if (!recording) {
+                if (recWaiting) { // stopped before the first IDR: no file was ever created
+                    recWaiting = false;
+                    setStatus(null);
+                }
+                if (rec != null) stopRecording();
+            } else if (rec == null) {
+                if (type != 5) { // start at a keyframe (desktop T182/T238): a P-slice first would not decode
+                    if (!recWaiting) {
+                        recWaiting = true;
+                        setStatus("Recording… waiting for keyframe");
+                    }
+                    return;
+                }
                 rec = openRecording();
                 if (sps != null) rec.write(sps);
                 if (pps != null) rec.write(pps);
+                recWaiting = false;
+                setStatus(null);
                 toast("Recording to " + recName);
-            } else if (!recording && rec != null) {
-                stopRecording();
             }
             if (rec != null) rec.write(buf, off, len);
         } catch (IOException | RuntimeException e) { // MediaStore can throw SecurityException/IllegalArgumentException
