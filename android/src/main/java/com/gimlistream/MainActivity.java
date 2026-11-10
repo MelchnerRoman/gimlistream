@@ -20,6 +20,7 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.SystemClock;
 import android.provider.MediaStore;
+import android.util.Log;
 import android.window.OnBackInvokedDispatcher;
 import android.view.Gravity;
 import android.view.Surface;
@@ -234,6 +235,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     }
                 }
             } catch (RuntimeException e) {
+                if (!running) break;
+                Log.w("gimlistream", "loop error", e);
+                setStatus("Error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
                 sleep(1000); // e.g. SecurityException from the USB calls; keep the worker alive
             }
         }
