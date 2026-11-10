@@ -696,7 +696,10 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
                         Ok(f) => {
                             let f = std::io::BufWriter::new(f);
                             rec_wait_idr = true;
-                            app.set_status(&format!("recording to {}", path.display()));
+                            app.set_status(&format!(
+                                "recording to {} (waiting for keyframe)",
+                                path.display()
+                            ));
                             rec = Some((f, path));
                         }
                         Err(e) => {
@@ -745,7 +748,11 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
                 (true, None) => Ok(()),
                 (true, Some(off)) => {
                     rec_wait_idr = false;
-                    f.write_all(&[sps.as_slice(), &pps, &complete[off..]].concat())
+                    let w = f.write_all(&[sps.as_slice(), &pps, &complete[off..]].concat());
+                    if w.is_ok() {
+                        app.set_status(&format!("recording to {}", path.display()));
+                    }
+                    w
                 }
             };
             if let Err(e) = written {
