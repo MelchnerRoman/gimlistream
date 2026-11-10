@@ -258,6 +258,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     }
 
     private void stream(UsbDevice dev) throws IOException {
+        sps = pps = null; // don't write the previous connection's params into a new recording
         UsbDeviceConnection conn = usb.openDevice(dev);
         if (conn == null) {
             throw new IOException("can't open the goggles");
