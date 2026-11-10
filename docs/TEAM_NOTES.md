@@ -1,6 +1,6 @@
 # Gimlistream: team notes
 
-Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on macOS, Windows and Android. Current version 0.4.0 (release commit `a76237e`; this tree is at `ca832b7`, which adds T182, T189, T193 and T195 on top of that release).
+Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on macOS, Windows and Android. Current version 0.4.0 (release commit `a76237e`; this tree is at `899417b`, which adds T182, T189, T193, T195 and T205 on top of that release).
 
 ## Stack
 
@@ -90,7 +90,7 @@ Recording helpers (T193): the file-naming/collision logic moved out of `MainActi
 
 ## How to test
 
-- Desktop unit tests: `cargo test`. Covers `last_start_code`, `start_codes`, `menu_button` hit-testing and edges (`menu_button_edges`), `read_actions`, the stream buffer cap (`caps_stream_without_start_code`, `capped_stream_stays_bounded_and_recovers`), the REC dot (`rec_dot_is_drawn_in_corner_only`), the watermark blend, the first-IDR search (`finds_idr_offset`, added in T182) and the Annex B handling (`split_handles_chunk_boundaries`, `keeps_latest_sps_pps` exercising `keep_sps_pps`). These run in CI on every push and PR.
+- Desktop unit tests: `cargo test`. Covers `last_start_code`, `start_codes`, `menu_button` hit-testing and edges (`menu_button_edges`), `read_actions`, the stream buffer cap (`caps_stream_without_start_code`, `capped_stream_stays_bounded_and_recovers`), the REC dot (`rec_dot_is_drawn_in_corner_only`), the watermark blend, the first-IDR search (`finds_idr_offset`, added in T182), the Ctrl-C flush helper (`finish_recording_flushes_buffered_tail`, added in T209) and the Annex B handling (`split_handles_chunk_boundaries`, `keeps_latest_sps_pps` exercising `keep_sps_pps`). These run in CI on every push and PR.
 - Android: the `NalSplitter` self-check is a plain `main()`, not a JUnit test. Run it with:
   ```sh
   cd android/src/main/java && javac com/gimlistream/NalSplitter.java -d /tmp/nal-out && java -ea -cp /tmp/nal-out com.gimlistream.NalSplitter
@@ -109,7 +109,7 @@ Recording helpers (T193): the file-naming/collision logic moved out of `MainActi
 2. CI runs `cargo test`, the Android JUnit test (`gradle ... testDebugUnitTest`) and the `NalSplitter` `main()` self-check, all in `build.yml`.
 3. Android release builds are signed with the debug key (marked `ponytail:` in `build.gradle.kts`). The macOS build is ad-hoc signed (also marked `ponytail:`). Both verified in T51. Both mean installers show security warnings. The README covers them (T54): Mac Gatekeeper (right-click → Open, described as ad-hoc signed), Android unknown-sources and Play Protect prompts, and Windows SmartScreen (More info → Run anyway).
 4. `main.rs` is a single 946-line file mixing UI, USB, decode, recording, diagnostics and Windows FFI. Splitting it is optional; the current layout is easy to scan.
-5. Cargo verified in T204 (macOS): `cargo test` ran 11 tests, 11 passed, 0 failed; `cargo clippy` was last run in T186 with no warnings or errors. The set is the T91 ten plus `finds_idr_offset` (T182). T91: `cargo test` ran 10 tests, 10 passed, 0 failed, 0 ignored (`capped_stream_stays_bounded_and_recovers`, `finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `menu_button_edges`, `read_actions`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `rec_dot_is_drawn_in_corner_only`, `caps_stream_without_start_code`, `watermark_blends_into_bottom_right`). `cargo build --release` last verified in T40 (success, about 6s). Neither command printed any warnings or errors. `cargo clippy` (T49): clean, 0 warnings.
+5. Cargo verified in T209 (macOS): `cargo test` ran 12 tests, 12 passed, 0 failed; `cargo clippy --all-targets` is clean. The set is the T91 ten plus `finds_idr_offset` (T182) and `finish_recording_flushes_buffered_tail` (T209). `cargo test` last ran clean (11/11) in T204, and `cargo clippy` was last run before T209 in T186 with no warnings or errors. T91: `cargo test` ran 10 tests, 10 passed, 0 failed, 0 ignored (`capped_stream_stays_bounded_and_recovers`, `finds_start_codes_and_menu_buttons`, `keeps_latest_sps_pps`, `menu_button_edges`, `read_actions`, `splits_at_last_start_code`, `split_handles_chunk_boundaries`, `rec_dot_is_drawn_in_corner_only`, `caps_stream_without_start_code`, `watermark_blends_into_bottom_right`). `cargo build --release` re-verified in T209 (success, about 6s; first in T40). Neither command printed any warnings or errors. `cargo clippy` (T49): clean, 0 warnings.
 
 ### Desktop unplug / replug review (T94)
 
@@ -139,6 +139,7 @@ Agent shells can't run gradle or adb, so these have never been run by agents:
 - On-device check of the T124 in-place resize re-fit (split-screen/freeform resize should re-letterbox the video).
 - Desktop, T182 (first-IDR recording start): start a recording mid-GOP (press R a second or more into the stream, not right at connect) and confirm with a real player that the `.h264` plays from its first frame (from the keyframe), not black/garbage. Expected: the file is shorter than the time R was on (pre-IDR NALs are dropped), and the player shows video immediately on open. Also check that if R is pressed and the goggles stop sending before any IDR arrives, the file is 0 bytes and stopping the recording still reports `saved <path>`.
 - Desktop, T195 (diagnostics while streaming): press D while the stream is running and recording; the window should keep updating and the REC file keep growing while the report subprocess runs and the dialog is up. Pressing D again while a report is still open should do nothing (one report at a time). Confirm the report still contains the correct status line.
+- Desktop, T205/T209 (Ctrl-C/SIGTERM flush): with the goggles streaming and REC on, press Ctrl-C in the launching terminal (macOS, and Windows if the console receives it) and, on macOS, send SIGTERM (`kill <pid>`). Expected: the process exits with code 0, the file is a complete Annex B stream through the last fully buffered NAL (no truncated tail) and plays in VLC/IINA. Ctrl-C does not reach a Windows GUI-subsystem process that is not attached to a console (`windows_subsystem = "windows"`, main.rs:2), so check that case explicitly: if the app does not exit, that is expected behaviour of this build and needs a code change (attach to the parent console before `ctrlc::set_handler`). The signal plumbing itself was verified without goggles in T209 on macOS (SIGINT and SIGTERM both exit 0); only the recording flush under a live stream is unverified.
 - On-device, T189 (USB detach/replug permission): with the goggles streaming, unplug and replug quickly (within 15 s). Expected: the permission dialog appears immediately on replug instead of streaming staying silent until the 15 s re-ask; after allowing, the stream resumes. Also confirm a plain unplug still shows "Connection lost … Retrying…" then "Waiting for goggles…".
 - On-device lifecycle check (T159, from T156). Expected results, with the goggles connected:
   - Pause during REC, then resume: one playable file per session, closed on pause.
@@ -150,7 +151,7 @@ The CI Android unit-test step is the only automated check.
 ## Verification status of these notes
 
 - Read every source, script, workflow and build file listed above.
-- Ran `cargo test` in T204 (11 passed, 0 failed) and `cargo build --release` in T40 (success), with no warnings or errors. See Observation 5.
+- Ran `cargo test` in T209 (12 passed, 0 failed) and `cargo build --release` in T40 (success), with no warnings or errors. See Observation 5.
 - Ran `cargo clippy` in T186: no warnings or errors (also clean in T49).
 - Bundle scripts (T52): still never executed. They are `sh` scripts needing lipo, codesign, ditto, mingw, curl, zip and gradle, and agents may only run npm/node/cargo. Checked by reading only: every file they reference exists (`assets/AppIcon.icns`, `assets/README-windows.txt`, `android/build.gradle.kts`); the README commands and output paths match the scripts; `build.yml` runs all three scripts with the same rustup targets and mingw install the scripts list; the version regex in `bundle.sh` matches `version = "0.4.0"` in `Cargo.toml`; `build.gradle.kts` parses that version for `versionName`/`versionCode`. Unverified: that the scripts actually succeed, the Zadig SHA-256 and URL, the static-link DLL check, the APK output filename `gimlistream-release.apk`, and the codesign/zip output. CI is the only place they run.
 - Did not run the Android build; it remains unverified. The Android `NalSplitter` self-check and `NalSplitterTest` cannot be run by agents (no javac/java/gradle in their shell); the Android job in `build.yml` runs them and is the source of truth. The commands above are taken from the README, the scripts and CI.
@@ -189,3 +190,9 @@ Reviewed `stream()`/`queue()`/`drain()`/`loop()`. Already fine: `createDecoderBy
 ## T167/T168: responsive idle sleep (Android)
 
 The idle "no goggles" sleep in `MainActivity.loop()` now exits promptly on pause (10 x 100 ms, checks `running`). T168 verifies this. The 2 s `bulkTransfer` pokes can still delay exit.
+
+## T205/T209: Ctrl-C/SIGTERM flushes a recording (desktop)
+
+T205 adds `ctrlc` (feature `termination`) and sets an `AtomicBool` (`QUIT`) in the handler (main.rs:163); `menu()` and `watching()` check it, so `stream()` unwinds through the existing exit path: the loop condition fails within one 100 ms USB read (or up to 2 s while a poke write is in flight), `finish_recording()` flushes the `BufWriter`, the file is closed, and `main` returns `Ok(())` so the exit code is 0. The handler only sets a flag, so nothing async-signal-unsafe runs in the signal context. The flush keeps the last fully drained NAL; the partial NAL still in the stream buffer is not written (expected). If recording was still waiting for its first IDR, the file stays 0 bytes.
+
+Static review found no defect in the macOS path. T209 verified without goggles on macOS: launching the built binary (debug and release) and sending SIGINT and SIGTERM each produced exit code 0 within the 1.2 s check window. T209 also added `finish_recording_flushes_buffered_tail` (buffered bytes really reach the file before "saved" is reported). Not verified: the flush under a live goggle stream (needs hardware; see "Needs human verification"), and Windows, where the `windows_subsystem = "windows"` build may not be attached to the launching console, in which case `SetConsoleCtrlHandler` (what `ctrlc` uses on Windows) receives no Ctrl-C. Killing the window still flushes as before.
