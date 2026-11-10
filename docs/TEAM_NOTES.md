@@ -132,3 +132,24 @@ The CI Android unit-test step is the only automated check.
 - Ran `cargo clippy` in T49: clean, 0 warnings.
 - Bundle scripts (T52): still never executed. They are `sh` scripts needing lipo, codesign, ditto, mingw, curl, zip and gradle, and agents may only run npm/node/cargo. Checked by reading only: every file they reference exists (`assets/AppIcon.icns`, `assets/README-windows.txt`, `android/build.gradle.kts`); the README commands and output paths match the scripts; `build.yml` runs all three scripts with the same rustup targets and mingw install the scripts list; the version regex in `bundle.sh` matches `version = "0.4.0"` in `Cargo.toml`; `build.gradle.kts` parses that version for `versionName`/`versionCode`. Unverified: that the scripts actually succeed, the Zadig SHA-256 and URL, the static-link DLL check, the APK output filename `gimlistream-release.apk`, and the codesign/zip output. CI is the only place they run.
 - Did not run the Android build; it remains unverified. The Android `NalSplitter` self-check and `NalSplitterTest` cannot be run by agents (no javac/java/gradle in their shell); the Android job in `build.yml` runs them and is the source of truth. The commands above are taken from the README, the scripts and CI.
+
+## T156: Android lifecycle review (read-only)
+
+Scope: `MainActivity.java` (`onCreate`, `onResume`, `onPause`, `startWorker`, `loop`, `stream`, `record`, `stopRecording`) and `AndroidManifest.xml`. Nothing compiled or run on a device.
+
+Facts from the code:
+- There is no USB-detached broadcast receiver, and no `BroadcastReceiver` of any kind. The USB permission result is polled, not received (comment at line 226). `grep` for `Receiver`, `registerReceiver`, `DETACHED`, `onDestroy`, `onStop`, `onNewIntent` finds nothing. So there is nothing to unregister.
+- Unplug is detected by polling in `stream()`: a `bulkTransfer` read returns `<= 0` and `findGoggles() == null` throws `IOException("goggles disconnected")` (about 100 ms, one read timeout). The `finally` then calls `stopRecording()`, `codec.release()` and `conn.close()`. `loop()` then shows "Waiting for goggles". The file is closed and the USB connection released.
+- `onPause` sets `running = false`, removes the pending `startWorker` post and joins the worker for up to 1 s. The worker's `stream()` `finally` is the only place that closes `rec`, so a recording is closed on every pause (the worker exits within one read timeout, 100 ms, when streaming).
+- `rec` is only non-null inside `stream()`, so the `finally` covers every path that opens a file.
+- No `onDestroy` is needed: the back-invoked callback is owned by the window, and the layout listener and the `startWorker` post are owned by views and removed in `onPause`.
+
+Findings (none is a crash or a leak):
+1. **Join can time out, so the worker can outlive `onPause` by about 1–2 s.** The idle branch `sleep(1000)` (no goggles found) does not check `running`, and the stream-start and no-data `bulkTransfer(out, MAGIC, 2000)` pokes can block up to 2 s. `join(1000)` then returns early. The worker still exits (`running` is false) and closes the file, and `onResume` waits on `startWorker` if it is still alive. Low. Risk: if Android kills the process in that window, the 1 MB `BufferedOutputStream` may not be flushed and the file is truncated.
+2. **`sps`/`pps` are never cleared between streams.** `record()` writes the last SPS/PPS from the previous connection at the start of the new file. If the goggles' mode changed, the file header is wrong until the next parameter sets. Low. One-line fix: reset `sps = pps = null;` at the start of `stream()`.
+3. **Errors other than `Exception` kill the worker.** `loop()` catches `Exception` and `RuntimeException` only. An `Error` (e.g. `OutOfMemoryError`) ends the thread with an uncaught exception, which crashes the app. The `finally` still closes the file and the connection. Very low. Not worth changing without a reproduction.
+4. **Behaviour to confirm with the owner (not a bug in the code):** `recording` stays true after pause, unplug or permission dialog. The next `onResume` then opens a new `Gimlistream … .h264` on the first NAL, with a toast. So an app switch or a permission prompt during REC ends the first file and silently starts a second one. This is intended by the T117 notes, but the owner may not want it.
+
+Needs device checks (agents cannot run them): pause during REC then resume (expect one playable file per session, closed on pause); unplug during REC (expect file saved and "Waiting for goggles"); permission dialog during REC.
+
+Follow-ups created by T156: see the orchestrator's task list (sps/pps reset; on-device lifecycle check). Fixes not applied (read-only task).
