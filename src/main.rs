@@ -180,6 +180,7 @@ fn main() -> Res<()> {
         driver_prompted: false,
         recording: false,
         leave: false,
+        diagnosing: None,
     };
 
     while let Some(record) = app.menu() {
@@ -299,6 +300,7 @@ struct App {
     driver_prompted: bool, // Windows: show the Zadig instructions once per run, not every retry
     recording: bool, // wanted by the user; stream() opens/closes the file to match
     leave: bool,     // Esc pressed in the live view: back to the menu
+    diagnosing: Option<std::thread::JoinHandle<()>>,
 }
 
 impl App {
@@ -335,16 +337,19 @@ impl App {
         }
     }
 
-    fn diagnose(&self) {
-        let report = std::env::current_exe()
-            .and_then(|exe| {
-                Command::new(exe)
-                    .args(["--diagnostics", &self.status])
-                    .output()
-            })
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_else(|e| format!("couldn't run diagnostics: {e}"));
-        show_report(&report);
+    /// Runs on a thread (subprocess + dialog both block) so USB reads and the window keep going.
+    fn diagnose(&mut self) {
+        if self.diagnosing.as_ref().is_some_and(|h| !h.is_finished()) {
+            return; // one report at a time
+        }
+        let status = self.status.clone();
+        self.diagnosing = Some(std::thread::spawn(move || {
+            let report = std::env::current_exe()
+                .and_then(|exe| Command::new(exe).args(["--diagnostics", &status]).output())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+                .unwrap_or_else(|e| format!("couldn't run diagnostics: {e}"));
+            show_report(&report);
+        }));
     }
 }
 
