@@ -693,6 +693,10 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         match decoder.decode(&complete) {
             Ok(Some(yuv)) => {
                 let (w, h) = yuv.dimensions();
+                if w == 0 || h == 0 {
+                    app.window.update(); // bogus size from a corrupt SPS; don't feed minifb an empty buffer
+                    continue;
+                }
                 rgb.resize(w * h * 3, 0);
                 yuv.write_rgb8(&mut rgb);
                 frame.clear();
