@@ -619,17 +619,27 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     let (mut sps, mut pps) = (Vec::new(), Vec::new());
 
     app.set_status("streaming");
+    let mut err = None;
     while app.watching() {
         app.poll_ui();
-        match handle.read_bulk(ep_in, &mut chunk, Duration::from_millis(100)) {
-            Ok(n) if n > 0 => stream.extend_from_slice(&chunk[..n]),
-            Ok(_) | Err(rusb::Error::Timeout) => {
+        let read = handle.read_bulk(ep_in, &mut chunk, Duration::from_millis(100));
+        match read_action(&read) {
+            ReadAction::Data(n) => stream.extend_from_slice(&chunk[..n]),
+            ReadAction::Poke => {
                 // Goggles stop streaming until poked again.
                 let _ = handle.write_bulk(ep_out, MAGIC, Duration::from_secs(2));
                 app.window.update();
                 continue;
             }
-            Err(e) => return Err(e.into()),
+            ReadAction::Retry => {
+                app.window.update();
+                continue;
+            }
+            // Don't `return` here: the recording below must still be flushed and reported.
+            ReadAction::Fail => {
+                err = read.err();
+                break;
+            }
         }
 
         let Some(cut) = last_start_code(&stream).filter(|&c| c > 0) else {
@@ -694,11 +704,38 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         let _ = f.flush();
         app.set_status(&format!("saved {}", path.display()));
     }
-    Ok(())
+    err.map_or(Ok(()), |e| Err(e.into()))
+}
+
+enum ReadAction {
+    Data(usize),
+    Poke,
+    Retry,
+    Fail,
+}
+
+/// Timeout re-pokes the goggles; an empty read or EINTR just retries (no poke, so no write spin); anything else ends the stream.
+fn read_action(r: &Result<usize, rusb::Error>) -> ReadAction {
+    match r {
+        Ok(0) | Err(rusb::Error::Interrupted) => ReadAction::Retry,
+        Ok(n) => ReadAction::Data(*n),
+        Err(rusb::Error::Timeout) => ReadAction::Poke,
+        Err(_) => ReadAction::Fail,
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn read_actions() {
+        use super::{read_action as a, ReadAction as R};
+        assert!(matches!(a(&Ok(5)), R::Data(5)));
+        assert!(matches!(a(&Ok(0)), R::Retry));
+        assert!(matches!(a(&Err(rusb::Error::Interrupted)), R::Retry));
+        assert!(matches!(a(&Err(rusb::Error::Timeout)), R::Poke));
+        assert!(matches!(a(&Err(rusb::Error::NoDevice)), R::Fail));
+    }
+
     #[test]
     fn caps_stream_without_start_code() {
         let mut buf = vec![7u8; super::MAX_STREAM_BUF];
