@@ -350,10 +350,10 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             }
             if (rec != null) rec.write(buf, off, len);
         } catch (IOException | RuntimeException e) { // MediaStore can throw SecurityException/IllegalArgumentException
-            toast("Recording failed: " + e.getMessage());
+            toast("Recording failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
             try {
                 if (rec != null) rec.close(); // release the file/MediaStore handle
-            } catch (IOException ignored) {
+            } catch (Exception ignored) { // must not escape: rec/recording reset below
             }
             rec = null;
             recording = false; // now, so the next NAL doesn't retry openRecording before the UI thread runs
@@ -385,10 +385,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
         try {
             rec.close();
             toast("Saved " + recName);
-        } catch (IOException e) {
-            toast("Saving " + recName + " failed: " + e.getMessage());
+        } catch (Exception e) {
+            toast("Saving " + recName + " failed: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+        } finally {
+            rec = null;
         }
-        rec = null;
     }
 
     private void toast(String text) {
