@@ -58,6 +58,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private TextView status;
     private SurfaceView video;
     private volatile Surface surface;
+    private final Object surfaceLock = new Object();
     private volatile boolean running;
     private volatile boolean live;      // false while the start menu is showing
     private volatile boolean recording; // wanted by the user; the worker opens/closes the file to match
@@ -194,7 +195,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        surface = null;
+        synchronized (surfaceLock) { // waits for an in-flight render; the worker then stops and releases the codec
+            surface = null;
+        }
     }
 
     /** Worker thread: find goggles, get permission, stream; retry on anything going wrong. */
@@ -237,14 +240,14 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                         if (!running) break; // paused mid-stream (e.g. surface torn down): exit now, onPause is joining us
                         permissionRequested = false; // detach + quick replug: the new device needs a fresh request now, not after 15 s
                         setStatus("Connection lost: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
-                        sleep(1000);
+                        for (int i = 0; i < 10 && running; i++) sleep(100); // stay responsive to onPause
                     }
                 }
             } catch (RuntimeException e) {
                 if (!running) break;
                 Log.w("gimlistream", "loop error", e);
                 setStatus("Error: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
-                sleep(1000); // e.g. SecurityException from the USB calls; keep the worker alive
+                for (int i = 0; i < 10 && running; i++) sleep(100); // e.g. SecurityException from the USB calls; keep the worker alive
             }
         }
     }
@@ -317,13 +320,17 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
                     continue;
                 }
                 errors = 0;
-                nals.add(chunk, n, (buf, off, len) -> {
-                    record(buf, off, len);
-                    queue(c, buf, off, len);
-                });
-                if (drain(c) && !showing[0]) {
-                    showing[0] = true;
-                    setStatus(null);
+                // surfaceDestroyed takes the same lock, so the surface is never torn down mid-render.
+                synchronized (surfaceLock) {
+                    if (surface == null) break;
+                    nals.add(chunk, n, (buf, off, len) -> {
+                        record(buf, off, len);
+                        queue(c, buf, off, len);
+                    });
+                    if (drain(c) && !showing[0]) {
+                        showing[0] = true;
+                        setStatus(null);
+                    }
                 }
             }
         } finally {
