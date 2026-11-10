@@ -29,7 +29,7 @@ fn draw_watermark(frame: &mut [u32], w: usize, h: usize) {
         return;
     }
     let (x0, y0) = (w - WM_SIZE - WM_MARGIN, h - WM_SIZE - WM_MARGIN);
-    for (i, px) in WATERMARK.chunks_exact(4).enumerate() {
+    for (i, px) in WATERMARK.as_chunks::<4>().0.iter().enumerate() {
         let a = px[3] as u32 * WM_OPACITY / 255;
         if a == 0 {
             continue;
@@ -224,7 +224,9 @@ impl App {
             self.window.set_title("Gimlistream"); // keep the final "saved <file>" report on quit
         }
         let img: Vec<u32> = MENU
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]]))
             .collect();
         // Advance minifb's key state: the Esc that left the live view still reads as "pressed" until the next update and would quit.
@@ -825,7 +827,9 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
                 yuv.write_rgb8(&mut rgb);
                 frame.clear();
                 frame.extend(
-                    rgb.chunks_exact(3)
+                    rgb.as_chunks::<3>()
+                        .0
+                        .iter()
                         .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]])),
                 );
                 draw_watermark(&mut frame, w, h);
