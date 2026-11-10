@@ -152,9 +152,18 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
             if (worker != null) worker.join(2000); // onPause's join may have timed out (poke is 2 s); never run two workers
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
+        }
+        startWorker();
+    }
+
+    /** Starts the worker unless the old one is still winding down; then retries until it has exited. */
+    private final Runnable startWorker = this::startWorker;
+
+    private void startWorker() {
+        if (worker != null && worker.isAlive()) {
+            video.postDelayed(startWorker, 250); // onPause cancels this
             return;
         }
-        if (worker != null && worker.isAlive()) return;
         running = true;
         worker = new Thread(this::loop, "gimlistream-usb");
         worker.start();
@@ -163,8 +172,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onPause() {
         running = false;
+        video.removeCallbacks(startWorker);
         try {
-            worker.join(1000); // reads time out after 100 ms, so this is quick
+            if (worker != null) worker.join(1000); // reads time out after 100 ms, so this is quick
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }
