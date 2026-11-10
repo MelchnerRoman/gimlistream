@@ -148,12 +148,7 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     @Override
     protected void onResume() {
         super.onResume();
-        try {
-            if (worker != null) worker.join(2000); // onPause's join may have timed out (poke is 2 s); never run two workers
-        } catch (InterruptedException ignored) {
-            Thread.currentThread().interrupt();
-        }
-        startWorker();
+        startWorker(); // waits (non-blocking) if onPause's join timed out; never runs two workers
     }
 
     /** Starts the worker unless the old one is still winding down; then retries until it has exited. */
@@ -199,38 +194,46 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback {
     private void loop() {
         boolean permissionRequested = false;
         long lastRequestMs = 0;
+        boolean menuShown = false;
         while (running) {
-            if (!live) {
-                sleep(100);
-                continue;
-            }
-            UsbDevice dev = findGoggles();
-            if (dev == null) {
-                permissionRequested = false;
-                setStatus("Waiting for goggles…\nConnect DJI FPV Goggles V1/V2 with a USB-C cable (OTG)");
-                sleep(1000);
-            } else if (!usb.hasPermission(dev)) {
-                setStatus("Allow Gimlistream to access the goggles");
-                // Re-ask every 15 s so a denied dialog doesn't need a replug.
-                long now = System.currentTimeMillis();
-                if (!permissionRequested || now - lastRequestMs > 15000) {
-                    permissionRequested = true;
-                    lastRequestMs = now;
-                    // Result is picked up by polling hasPermission(), so no receiver is needed.
-                    Intent i = new Intent("com.gimlistream.USB_PERMISSION").setPackage(getPackageName());
-                    usb.requestPermission(dev, PendingIntent.getBroadcast(this, 0, i, PendingIntent.FLAG_MUTABLE));
+            try {
+                if (!live) {
+                    if (!menuShown) setStatus(null); // don't leave "Waiting for goggles" over the menu
+                    menuShown = true;
+                    sleep(100);
+                    continue;
                 }
-                sleep(500);
-            } else if (surface == null) {
-                sleep(100);
-            } else {
-                try {
-                    stream(dev);
-                } catch (Exception e) {
-                    if (!running) break; // paused mid-stream (e.g. surface torn down): exit now, onPause is joining us
-                    setStatus("Connection lost: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
+                menuShown = false;
+                UsbDevice dev = findGoggles();
+                if (dev == null) {
+                    permissionRequested = false;
+                    setStatus("Waiting for goggles…\nConnect DJI FPV Goggles V1/V2 with a USB-C cable (OTG)");
                     sleep(1000);
+                } else if (!usb.hasPermission(dev)) {
+                    setStatus("Allow Gimlistream to access the goggles");
+                    // Re-ask every 15 s so a denied dialog doesn't need a replug.
+                    long now = System.currentTimeMillis();
+                    if (!permissionRequested || now - lastRequestMs > 15000) {
+                        permissionRequested = true;
+                        lastRequestMs = now;
+                        // Result is picked up by polling hasPermission(), so no receiver is needed.
+                        Intent i = new Intent("com.gimlistream.USB_PERMISSION").setPackage(getPackageName());
+                        usb.requestPermission(dev, PendingIntent.getBroadcast(this, 0, i, PendingIntent.FLAG_MUTABLE));
+                    }
+                    sleep(500);
+                } else if (surface == null) {
+                    sleep(100);
+                } else {
+                    try {
+                        stream(dev);
+                    } catch (Exception e) {
+                        if (!running) break; // paused mid-stream (e.g. surface torn down): exit now, onPause is joining us
+                        setStatus("Connection lost: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()) + "\nRetrying…");
+                        sleep(1000);
+                    }
                 }
+            } catch (RuntimeException e) {
+                sleep(1000); // e.g. SecurityException from the USB calls; keep the worker alive
             }
         }
     }
