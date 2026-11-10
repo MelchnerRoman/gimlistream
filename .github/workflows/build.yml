@@ -38,6 +38,7 @@ jobs:
         with:
           gradle-version: "9.9"
       - run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0" > /dev/null
+      - run: gradle --no-daemon -p android testDebugUnitTest
       - run: javac -d /tmp/nal android/src/main/java/com/gimlistream/NalSplitter.java && java -ea -cp /tmp/nal com.gimlistream.NalSplitter
       - run: ./bundle-android.sh
       - uses: actions/upload-artifact@v4
