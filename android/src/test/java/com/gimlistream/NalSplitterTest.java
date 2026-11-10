@@ -31,6 +31,30 @@ public class NalSplitterTest {
     }
 
     @Test
+    public void skipsStartCodeOnlyUnits() {
+        List<byte[]> got = new ArrayList<>();
+        NalSplitter.Sink sink = (b, off, n) -> got.add(Arrays.copyOfRange(b, off, off + n));
+        NalSplitter s = new NalSplitter();
+
+        // a start code immediately followed by another start code: only the SPS (released by the next
+        // start code) may come out, not the 3-byte "00 00 01" unit
+        byte[] data = {0, 0, 1, 0, 0, 1, 0x67, 7, 0, 0, 1};
+        s.add(data, data.length, sink);
+        assertEquals(1, got.size());
+        assertEquals("[0, 0, 1, 103, 7]", Arrays.toString(got.get(0)));
+
+        // the same empty unit between two real NALs: SPS and PPS both arrive, the empty unit does not
+        List<byte[]> got2 = new ArrayList<>();
+        NalSplitter.Sink sink2 = (b, off, n) -> got2.add(Arrays.copyOfRange(b, off, off + n));
+        NalSplitter s2 = new NalSplitter();
+        byte[] between = {0, 0, 1, 0x67, 9, 0, 0, 1, 0, 0, 1, 0x68, 7, 0, 0, 1, 0x65};
+        s2.add(between, between.length, sink2);
+        assertEquals(2, got2.size());
+        assertEquals("[0, 0, 1, 103, 9]", Arrays.toString(got2.get(0)));
+        assertEquals("[0, 0, 1, 104, 7]", Arrays.toString(got2.get(1)));
+    }
+
+    @Test
     public void overflowDropsBufferedBytesIncludingPartialStartCode() {
         List<byte[]> got = new ArrayList<>();
         NalSplitter.Sink sink = (b, off, n) -> got.add(Arrays.copyOfRange(b, off, off + n));

@@ -30,7 +30,7 @@ final class NalSplitter {
         int start = -1;
         for (int i = 0; i + 2 < len; i++) {
             if (buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1) {
-                if (start >= 0) {
+                if (start >= 0 && i - start >= 4) { // start code plus at least the 1-byte NAL header
                     sink.nal(buf, start, i - start);
                 }
                 start = i;
