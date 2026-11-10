@@ -627,7 +627,10 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
             ReadAction::Data(n) => stream.extend_from_slice(&chunk[..n]),
             ReadAction::Poke => {
                 // Goggles stop streaming until poked again.
-                let _ = handle.write_bulk(ep_out, MAGIC, Duration::from_secs(2));
+                if let Err(e) = handle.write_bulk(ep_out, MAGIC, Duration::from_secs(2)) {
+                    err = Some(e);
+                    break;
+                }
                 app.window.update();
                 continue;
             }
