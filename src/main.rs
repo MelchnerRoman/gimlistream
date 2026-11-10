@@ -778,11 +778,18 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
 }
 
 /// Flushes the recording; only claims "saved" if the last buffered bytes really hit the disk.
+/// A file stopped before its first IDR has zero bytes: remove it and say so instead of "saved".
 fn finish_recording(mut f: std::io::BufWriter<std::fs::File>, path: &std::path::Path) -> String {
-    match f.flush() {
-        Ok(()) => format!("saved {}", path.display()),
-        Err(e) => format!("saving {} failed: {e}", path.display()),
+    if let Err(e) = f.flush() {
+        return format!("saving {} failed: {e}", path.display());
     }
+    let empty = f.get_ref().metadata().is_ok_and(|m| m.len() == 0);
+    drop(f); // close before removing, so Windows can delete it
+    if empty {
+        let _ = std::fs::remove_file(path);
+        return format!("no keyframe captured, nothing saved: {}", path.display());
+    }
+    format!("saved {}", path.display())
 }
 
 enum ReadAction {
@@ -825,6 +832,24 @@ mod tests {
         let msg = super::finish_recording(f, &path);
         assert!(msg.starts_with("saved"), "{msg}");
         assert_eq!(std::fs::read(&path).unwrap(), b"\x00\x00\x01\x65tail");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn empty_recording_is_not_reported_as_saved() {
+        let path =
+            std::env::temp_dir().join(format!("gimlistream-t214-{}.h264", std::process::id()));
+        let f = std::fs::File::create(&path).unwrap();
+        let msg = super::finish_recording(std::io::BufWriter::new(f), &path);
+        assert!(msg.contains("no keyframe"), "{msg}");
+        assert!(!path.exists(), "empty file removed: {msg}");
+
+        let f = std::fs::File::create(&path).unwrap();
+        let mut f = std::io::BufWriter::new(f);
+        std::io::Write::write_all(&mut f, &[0, 0, 1, 0x65]).unwrap();
+        let msg = super::finish_recording(f, &path);
+        assert!(msg.starts_with("saved"), "{msg}");
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), 4);
         let _ = std::fs::remove_file(&path);
     }
 
