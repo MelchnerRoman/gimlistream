@@ -186,6 +186,8 @@ impl App {
             .chunks_exact(3)
             .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]]))
             .collect();
+        // Advance minifb's key state: the Esc that left the live view still reads as "pressed" until the next update and would quit.
+        self.window.update();
         let mut was_down = true; // ignore a click still held from the previous screen
         while self.window.is_open() {
             let down = self.window.get_mouse_down(MouseButton::Left);
