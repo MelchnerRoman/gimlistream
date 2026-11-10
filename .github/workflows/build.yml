@@ -26,6 +26,24 @@ jobs:
           name: Gimlistream-windows
           path: dist/Gimlistream-windows.zip
 
+  windows-ctrl-c:
+    # T268: Ctrl-C must reach the GUI-subsystem exe (T224/T226). Reuses the cross-built artifact,
+    # so there is no second Windows build path. Cannot check the recording: no goggles in CI.
+    needs: desktop
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Gimlistream-windows
+      - name: Extract Windows build
+        shell: pwsh
+        run: Expand-Archive Gimlistream-windows.zip -DestinationPath smoke
+      - name: Ctrl-C from the launching console exits 0
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File .github/ctrl-c-smoke.ps1 -Exe smoke/Gimlistream-windows/gimlistream.exe
+
   android:
     runs-on: ubuntu-latest
     steps:
