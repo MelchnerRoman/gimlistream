@@ -333,7 +333,9 @@ impl App {
 /// failures; opening is left to the caller so the two can be reported separately.
 fn find_goggles() -> Res<Option<rusb::Device<rusb::GlobalContext>>> {
     for dev in rusb::devices()?.iter() {
-        let d = dev.device_descriptor()?;
+        let Ok(d) = dev.device_descriptor() else {
+            continue;
+        };
         if d.vendor_id() == VENDOR_ID && d.product_id() == PRODUCT_ID {
             return Ok(Some(dev));
         }
