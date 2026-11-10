@@ -25,7 +25,7 @@ bundle-android.sh                 gradle assembleRelease -> dist/Gimlistream.apk
 android/
   build.gradle.kts                applicationId com.gimlistream, minSdk 26, targetSdk/compileSdk 37, versionName/versionCode derived from Cargo.toml (versionCode = major*10000 + minor*100 + patch, 400 for 0.4.0)
   src/main/java/com/gimlistream/
-    MainActivity.java             USB worker thread, MediaCodec decode to SurfaceView, recording (~410 lines)
+    MainActivity.java             USB worker thread, MediaCodec decode to SurfaceView, recording (446 lines)
     NalSplitter.java              Annex B NAL splitter, plain Java, self-check in main()
   src/main/res/                     layout, icons, device_filter.xml (USB VID/PID filter), cat.jpg/watermark.png
 assets/                           icons, menu/watermark buffers, Windows README + generators
@@ -83,7 +83,7 @@ Hardening (T57, T58):
   cd android/src/main/java && javac com/gimlistream/NalSplitter.java -d /tmp/nal-out && java -ea -cp /tmp/nal-out com.gimlistream.NalSplitter
   ```
   It prints `NalSplitter ok` on success. This check is CI-only for agents: the agent sandbox denies `javac` and `java`. CI runs it in the Android job of `build.yml`, before `bundle-android.sh`.
-- Android `stream()` (T92): 20 consecutive `bulkTransfer` reads returning `< 0` throw `IOException` so `loop()` reopens the connection. `UsbDeviceConnection.bulkTransfer` returns -1 for timeouts too, so this also fires after ~2 s with no video (e.g. drone off), causing a harmless reconnect cycle. Not unit-tested (needs a USB connection); not compiled here either.
+- Android `stream()` (T92): 20 consecutive `bulkTransfer` reads returning `< 0` throw `IOException("repeated USB read errors")` so `loop()` reopens the connection (the counter resets on a successful read; a failed `RMVT` poke write is still ignored on Android). `UsbDeviceConnection.bulkTransfer` returns -1 for timeouts too, so this also fires after ~2 s with no video (e.g. drone off), causing a harmless reconnect cycle. Not unit-tested (needs a USB connection); not compiled here either.
 - There is no hardware-free test for USB, decoding, or recording. Verify with real goggles (or Diagnostics output) on each platform.
 
 ## Observations (for planning, not yet changed)
@@ -101,7 +101,7 @@ Read-only review of `live()`, `stream()` and `read_action()` in `src/main.rs`. N
 - Unplug mid-stream: the next `read_bulk` returns an error other than Timeout/Interrupted (typically `NoDevice`), `read_action` maps it to `Fail`, `stream()` flushes any open recording and returns the error. `live()` shows "stream error ..., retrying...", waits 1 s, then loops. While the goggles are gone, `find_goggles()` returns `None` and the status reads "waiting for goggles". Handled.
 - Replug: the next `find_goggles()` finds the device, `open_goggles()` reopens and claims interface 3, and `stream()` re-sends `RMVT` and starts with a fresh decoder, buffer and SPS/PPS. Handled.
 - Recording across a replug: `app.recording` stays true, so the new `stream()` opens a new `Gimlistream N.h264` on its first complete NAL. Handled, but the "saved ..." status set before the error is overwritten by "stream error" in `live()`, so the user is not told where the first file went.
-- Gap: the `RMVT` poke in `stream()` ignores its `write_bulk` result (`let _ = ...`). If a device stops answering reads with `Timeout` instead of an error, the loop would keep poking and never reach `Fail`. Probably not the case with libusb (reads on a gone device return an error), but unverified. Smallest fix: treat a failed poke as `Fail`, i.e. `if handle.write_bulk(..).is_err() { err = ...; break; }`.
+- Fixed (after T94): the `RMVT` poke in `stream()` used to ignore its `write_bulk` result. A failed poke write now counts as a stream failure: `stream()` stores the error and breaks, so `live()` shows "stream error ..., retrying..." and reconnects. Not hardware-verified.
 
 ## Verification status of these notes
 
