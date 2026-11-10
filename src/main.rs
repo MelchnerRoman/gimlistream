@@ -572,6 +572,17 @@ mod win {
     #[link(name = "kernel32")]
     extern "system" {
         fn AttachConsole(process_id: u32) -> i32;
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn SetStdHandle(which: u32, handle: *mut c_void) -> i32;
+        fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *mut c_void,
+            disposition: u32,
+            flags: u32,
+            template: *mut c_void,
+        ) -> *mut c_void;
     }
     #[link(name = "user32")]
     extern "system" {
@@ -597,10 +608,39 @@ mod win {
     }
 
     /// Joins the console that launched us, so Ctrl-C is delivered. No-op when there is none (Explorer).
+    /// A GUI-subsystem process starts without stdout/stderr, and attaching doesn't add them, so
+    /// eprintln! (the "saved <file>" report) would go nowhere: point the missing ones at the console.
     pub fn attach_parent_console() {
         const ATTACH_PARENT_PROCESS: u32 = 0xFFFF_FFFF;
+        const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
+        const STD_ERROR_HANDLE: u32 = -12i32 as u32;
+        const GENERIC_READ_WRITE: u32 = 0xC000_0000;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        const OPEN_EXISTING: u32 = 3;
         unsafe {
-            AttachConsole(ATTACH_PARENT_PROCESS);
+            if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+                return;
+            }
+            let null = std::ptr::null_mut();
+            let con = CreateFileW(
+                wide("CONOUT$").as_ptr(),
+                GENERIC_READ_WRITE,
+                FILE_SHARE_WRITE,
+                null,
+                OPEN_EXISTING,
+                0,
+                null,
+            );
+            if con.is_null() || con as isize == -1 {
+                return;
+            }
+            // Keep handles that were redirected (e.g. `2> log.txt`); only fill the empty ones.
+            for which in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                let h = GetStdHandle(which);
+                if h.is_null() || h as isize == -1 {
+                    SetStdHandle(which, con);
+                }
+            }
         }
     }
 
