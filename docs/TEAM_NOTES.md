@@ -1,6 +1,6 @@
 # Gimlistream: team notes
 
-Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on macOS, Windows and Android. Current version 0.4.0 (release commit `a76237e`; this tree is at `899417b`, which adds T182, T189, T193, T195 and T205 on top of that release).
+Product goal: live view (and recording) of DJI FPV Goggles V1/V2 over USB, on macOS, Windows and Android. Current version 0.4.0 (release commit `a76237e`; this tree adds T182, T189, T193, T195, T205 and T209 on top of that release).
 
 ## Stack
 
