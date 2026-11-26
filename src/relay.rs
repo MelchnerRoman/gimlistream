@@ -4,6 +4,10 @@
 //! - 16-byte connect header: u32 LE magic 0x42069, width, height, fps (fps sets the playback rate).
 //! - then one access unit (a whole picture) per packet: u32 LE length + Annex B bytes, max 1 MB.
 //! - 3 s without a frame and the shim drops the connection and scans for the magic again.
+//!
+//! Learned on real goggles (V2, DIY mode, build 10.05.20.64): the playback decoder takes no picture
+//! at all if told more than 60 fps, or if pictures contain AUD/filler NALs. A Moonlight restarted
+//! while we keep streaming never resyncs (nothing tells us over USB): Esc -> Live view reconnects.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -18,12 +22,6 @@ const SHIM_RESET: Duration = Duration::from_millis(3500);
 /// How long to wait for an IDR before (re)starting on any picture: DJI may refresh without IDRs.
 const KEY_WAIT: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
-/// Moonlight restarted on the goggles (no USB change, so we can't tell) scans for the magic again.
-/// So every SYNC_EVERY, before a keyframe (or any picture after twice that), the header also goes
-/// out as its own frame, wrapped in an H.264 filler NAL (`sync_frame`): a running shim hands the
-/// decoder a filler unit it skips, a restarted one finds the magic in it and starts at the picture
-/// that follows. (Bare header bytes as a frame jammed the goggles' hardware decoder.)
-const SYNC_EVERY: Duration = Duration::from_secs(2);
 
 pub fn header(w: u32, h: u32, fps: u32) -> Vec<u8> {
     [MAGIC, w, h, fps]
@@ -32,14 +30,37 @@ pub fn header(w: u32, h: u32, fps: u32) -> Vec<u8> {
         .collect()
 }
 
-/// Length-prefixed frame holding just a filler NAL (type 12) whose payload is `header`.
-fn sync_frame(header: &[u8]) -> Vec<u8> {
-    let nal = [&[0, 0, 1, 12][..], header].concat();
-    [&(nal.len() as u32).to_le_bytes()[..], &nal].concat()
-}
-
 fn nal_type(nal: &[u8]) -> Option<u8> {
     nal.get(3).map(|b| b & 0x1f) // after the 00 00 01 start code
+}
+
+/// Rebuilds Annex B bytes for the goggles' decoder: 4-byte start codes, no AUD (9) or filler (12)
+/// NALs (goggles-bridge strips both for DJI's decoder too; with them the shim's decoder never
+/// took a single picture). Leading bytes before the first start code are dropped.
+pub fn clean_au(au: &[u8]) -> Vec<u8> {
+    let starts: Vec<usize> = au
+        .windows(3)
+        .enumerate()
+        .filter(|(_, w)| *w == [0, 0, 1])
+        .map(|(i, _)| i)
+        .collect();
+    let mut out = Vec::with_capacity(au.len() + 8);
+    for (k, &s) in starts.iter().enumerate() {
+        let mut end = starts.get(k + 1).copied().unwrap_or(au.len());
+        while end > s + 3 && au[end - 1] == 0 {
+            end -= 1; // trailing zeros: the next 4-byte start code's leading zero
+        }
+        if !matches!(nal_type(&au[s..end]), Some(9 | 12) | None) {
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(&au[s + 3..end]);
+        }
+    }
+    out
+}
+
+fn has_sps(au: &[u8]) -> bool {
+    au.windows(4)
+        .any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1f == 7)
 }
 
 fn is_slice(nal: &[u8]) -> bool {
@@ -106,7 +127,12 @@ impl FpsMeter {
             self.count += 1;
             let t = start.elapsed();
             if t >= Duration::from_secs(1) {
-                self.fps = Some(nearest_rate(self.count as f32 / t.as_secs_f32()));
+                // Hardware knob: GIMLISTREAM_RELAY_FPS overrides what the shim is told.
+                let forced = std::env::var("GIMLISTREAM_RELAY_FPS")
+                    .ok()
+                    .and_then(|v| v.parse().ok());
+                self.fps =
+                    Some(forced.unwrap_or(nearest_rate(self.count as f32 / t.as_secs_f32())));
             }
         }
         self.fps
@@ -114,8 +140,10 @@ impl FpsMeter {
 }
 
 /// Snaps a measured rate to a DJI mode, so jitter doesn't make the shim play slightly too slow.
+/// At most 60: the V2 playback decoder took no picture at all when told 90 or 120 (tested with
+/// a 120 fps drone stream, which then plays fine when announced as 60).
 fn nearest_rate(measured: f32) -> u32 {
-    [30u32, 50, 60, 90, 120]
+    [30u32, 50, 60]
         .into_iter()
         .min_by(|a, b| {
             (*a as f32 - measured)
@@ -145,7 +173,6 @@ pub fn sender(
     let mut last_sent: Option<Instant> = None;
     let mut resync = true; // must restart at a keyframe (start, after a drop or an error)
     let mut resync_since = Instant::now();
-    let mut last_header = Instant::now();
     for f in rx {
         if f.after_drop && !resync {
             resync = true;
@@ -163,24 +190,16 @@ pub fn sender(
                 continue; // let the shim's watchdog reset it first
             }
         }
-        let since = last_header.elapsed();
-        let sync = sent_format.is_some() && since > SYNC_EVERY && (f.key || since > 2 * SYNC_EVERY);
-        let data = if resync || sent_format.is_none() || sync {
-            [f.params.as_slice(), &f.data].concat()
-        } else {
-            f.data
-        };
+        let mut data = clean_au(&f.data);
+        if (resync || sent_format.is_none()) && !has_sps(&data) {
+            data = [clean_au(&f.params), data].concat();
+        }
         if data.len() > MAX_FRAME {
             continue;
         }
-        let mut packet = Vec::with_capacity(24 + 4 + data.len());
-        let hdr = header(f.format.0, f.format.1, f.format.2);
-        if sync {
-            packet.extend(sync_frame(&hdr));
-            last_header = Instant::now();
-        } else if sent_format.is_none() {
-            packet.extend(hdr);
-            last_header = Instant::now();
+        let mut packet = Vec::with_capacity(16 + 4 + data.len());
+        if sent_format.is_none() {
+            packet.extend(header(f.format.0, f.format.1, f.format.2));
         }
         packet.extend((data.len() as u32).to_le_bytes());
         packet.extend(&data);
@@ -216,20 +235,22 @@ mod tests {
     }
 
     #[test]
-    fn sync_frame_is_a_filler_nal_holding_the_header() {
-        let hdr = header(1440, 810, 120);
-        let f = sync_frame(&hdr);
-        assert_eq!(
-            &f[..4],
-            &20u32.to_le_bytes(),
-            "length prefix: start code + type + header"
-        );
-        assert_eq!(&f[4..8], &[0, 0, 1, 12]);
-        assert_eq!(&f[8..], &hdr[..]);
-        assert!(
-            !f[8..].windows(3).any(|w| w == [0, 0, 1]),
-            "no start code inside the filler"
-        );
+    fn cleans_pictures_for_the_decoder() {
+        // AUD, SPS, PPS, IDR with mixed 4-/3-byte start codes, as the goggles send them.
+        let au = [
+            &[0, 0, 0, 1, 0x09, 0xf0][..],
+            &[0, 0, 0, 1, 0x67, 1, 2],
+            &[0, 0, 1, 0x68, 3],
+            &[0, 0, 0, 1, 0x65, 0x88, 4, 0],
+            &[0, 0, 1, 0x0c, 0xff],
+        ]
+        .concat();
+        let want = [
+            0, 0, 0, 1, 0x67, 1, 2, 0, 0, 0, 1, 0x68, 3, 0, 0, 0, 1, 0x65, 0x88, 4,
+        ];
+        assert_eq!(clean_au(&au), want);
+        assert!(has_sps(&want));
+        assert!(!has_sps(&clean_au(&[0, 0, 1, 0x41, 0x9a])));
     }
 
     #[test]
@@ -259,7 +280,7 @@ mod tests {
     #[test]
     fn snaps_frame_rate() {
         assert_eq!(nearest_rate(58.7), 60);
-        assert_eq!(nearest_rate(117.0), 120);
+        assert_eq!(nearest_rate(117.0), 60, "capped: the goggles reject more");
         assert_eq!(nearest_rate(49.0), 50);
     }
 }

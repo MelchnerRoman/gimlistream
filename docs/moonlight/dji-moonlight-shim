@@ -1,0 +1,39 @@
+#!/system/bin/sh
+# Start script of fpv-wtf/dji-moonlight-shim 1.1.0 (ipk/data/opt/bin/dji-moonlight-shim),
+# GPL-3.0, https://github.com/fpv-wtf/dji-moonlight-shim. Modified for Gimlistream: instead of a
+# fixed 3 s, wait until the goggles UI has released the display (see the comment further down).
+
+set -euo pipefail
+
+# Figure out which glasses service we have to toggle.
+
+DEVICE=$(getprop ro.product.device)
+
+if [[ $DEVICE == *"wm170_gls"* ]]; then
+  GLASSES_SERIVCE="dji.glasses_wm150_service"
+else
+  GLASSES_SERIVCE="dji.glasses_service"
+fi
+
+# Start the shim.
+
+function cleanup {
+  sleep 3
+  setprop $GLASSES_SERIVCE 1
+  exit 0
+}
+
+trap cleanup EXIT INT TERM
+
+setprop $GLASSES_SERIVCE 0
+# Changed for Gimlistream: a fixed 3 s was too short in DIY mode, the shim then couldn't open
+# the display. Wait (max 10 s) until no process holds it any more, then 1 s more.
+i=0
+while [ $i -lt 10 ] && { ls -l /proc/[0-9]*/fd 2>/dev/null || true; } | grep -q dmi_display_tx; do
+  sleep 1
+  i=$((i + 1))
+done
+sleep 1
+
+cd /opt/moonlight
+./dji-moonlight-shim
