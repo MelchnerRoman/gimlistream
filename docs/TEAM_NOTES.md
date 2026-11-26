@@ -19,7 +19,7 @@ Assets are generated once and committed: `assets/AppIcon.icns`, `assets/icon.ico
 src/main.rs                       whole desktop app (1085 lines): menu, USB find/stream, decode, record, diagnostics, Windows win:: FFI
 build.rs                          Windows only: embeds assets/icon.ico via windres
 Cargo.toml / Cargo.lock          single package "gimlistream" 0.4.0
-bundle.sh                         macOS universal .app -> dist/Gimlistream.zip
+bundle.sh                         macOS universal .app -> dist/Gimlistream-mac.zip
 bundle-windows.sh                 cross-build x86_64-pc-windows-gnu -> dist/Gimlistream-windows.zip (bundles pinned zadig.exe + README)
 bundle-android.sh                 gradle assembleRelease -> dist/Gimlistream.apk
 android/
@@ -93,7 +93,7 @@ Recording starts at the first IDR (T302; desktop parity with T182/T238): `record
 ## How to build
 
 ```sh
-./bundle.sh            # dist/Gimlistream.zip: universal .app (arm64 + x86_64), ad-hoc signed
+./bundle.sh            # dist/Gimlistream-mac.zip: universal .app (arm64 + x86_64), ad-hoc signed
 ./bundle-windows.sh    # dist/Gimlistream-windows.zip (brew install mingw-w64; rustup target add x86_64-pc-windows-gnu)
 ./bundle-android.sh    # dist/Gimlistream.apk (signed with the debug key)
 ```

@@ -21,7 +21,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: Gimlistream-mac
-          path: dist/Gimlistream.zip
+          path: dist/Gimlistream-mac.zip
       - uses: actions/upload-artifact@v7
         with:
           name: Gimlistream-windows
@@ -75,6 +75,6 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes Gimlistream.zip Gimlistream-windows.zip Gimlistream.apk
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes Gimlistream-mac.zip Gimlistream-windows.zip Gimlistream.apk
         env:
           GH_TOKEN: ${{ github.token }}
