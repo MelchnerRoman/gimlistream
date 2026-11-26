@@ -425,6 +425,11 @@ fn find_goggles() -> Res<Vec<rusb::Device<rusb::GlobalContext>>> {
         .collect())
 }
 
+/// Identifies a connected device; a replug gets a new address.
+fn dev_id(d: &rusb::Device<rusb::GlobalContext>) -> (u8, u8) {
+    (d.bus_number(), d.address())
+}
+
 fn open_goggles(
     dev: &rusb::Device<rusb::GlobalContext>,
 ) -> Res<rusb::DeviceHandle<rusb::GlobalContext>> {
@@ -768,10 +773,11 @@ fn stream(handles: &[rusb::DeviceHandle<rusb::GlobalContext>], app: &mut App) ->
     let mut last_data = std::time::Instant::now();
     let mut err: Option<Box<dyn std::error::Error>> = None;
     // Relay to a second pair of goggles: whole pictures, frame rate measured, size from the decoder.
-    struct Target<'a> {
+    struct Target {
         tx: std::sync::mpsc::SyncSender<relay::Frame>,
         dropped: bool,
-        ok: &'a AtomicBool,
+        ok: std::sync::Arc<AtomicBool>, // pictures are getting through (set by its sender)
+        id: (u8, u8),
     }
     let mut targets: Vec<Target> = Vec::new();
     let mut splitter = relay::AuSplitter::default();
@@ -779,15 +785,18 @@ fn stream(handles: &[rusb::DeviceHandle<rusb::GlobalContext>], app: &mut App) ->
     let mut dims: Option<(u32, u32)> = None;
     let mut source: Option<usize> = None;
     let mut dead = 0; // readers that failed before any pair sent video
-                      // USB I/O runs on its own threads: libusb calls can block far longer than their timeout
-                      // (e.g. while the goggles lose the drone), and the window must keep handling events meanwhile.
+                      // Hot-plug: rescan every 2 s, so goggles connected during Live view become relay targets.
+    let mut known: Vec<(u8, u8)> = handles.iter().map(|h| dev_id(&h.device())).collect();
+    let mut last_scan = std::time::Instant::now();
+    // USB I/O runs on its own threads: libusb calls can block far longer than their timeout
+    // (e.g. while the goggles lose the drone), and the window must keep handling events meanwhile.
     let new_flags = || {
         handles
             .iter()
             .map(|_| AtomicBool::new(false))
             .collect::<Vec<_>>()
     };
-    let (stops, dones, oks) = (new_flags(), new_flags(), new_flags());
+    let (stops, dones) = (new_flags(), new_flags());
     let (tx, rx) = std::sync::mpsc::sync_channel(64);
     std::thread::scope(|s| {
         for (i, h) in handles.iter().enumerate() {
@@ -804,6 +813,39 @@ fn stream(handles: &[rusb::DeviceHandle<rusb::GlobalContext>], app: &mut App) ->
             if sharing != app.sharing {
                 app.sharing = sharing;
                 app.set_status(&app.status.clone());
+            }
+            if last_scan.elapsed() > Duration::from_secs(2) {
+                last_scan = std::time::Instant::now();
+                if let Ok(devs) = find_goggles() {
+                    let ids: Vec<_> = devs.iter().map(dev_id).collect();
+                    targets.retain(|t| ids.contains(&t.id)); // unplugged: closing the channel ends its sender
+                    known.retain(|k| ids.contains(k));
+                    let new: Vec<_> = devs
+                        .iter()
+                        .filter(|d| !known.contains(&dev_id(d)))
+                        .collect();
+                    if !new.is_empty() && source.is_none() {
+                        break; // no video yet: simplest to let live() reopen every pair
+                    }
+                    for d in new {
+                        known.push(dev_id(d));
+                        // Not openable (e.g. no WinUSB driver yet): stays in `known`, retried after a replug.
+                        let Ok(h) = open_goggles(d) else { continue };
+                        let Ok((_, ep_out)) = endpoints(&h) else {
+                            continue;
+                        };
+                        let (rtx, rrx) = std::sync::mpsc::sync_channel(4);
+                        let ok = std::sync::Arc::new(AtomicBool::new(false));
+                        let sender_ok = ok.clone();
+                        s.spawn(move || relay::sender(&h, ep_out, rrx, &sender_ok));
+                        targets.push(Target {
+                            tx: rtx,
+                            dropped: false,
+                            ok,
+                            id: dev_id(d),
+                        });
+                    }
+                }
             }
             // Handled before reading so R works even while the stream is stalled.
             if app.recording != rec.is_some() {
@@ -849,17 +891,21 @@ fn stream(handles: &[rusb::DeviceHandle<rusb::GlobalContext>], app: &mut App) ->
                         for (j, h) in handles.iter().enumerate().filter(|&(j, _)| j != i) {
                             stops[j].store(true, Ordering::Relaxed);
                             let (rtx, rrx) = std::sync::mpsc::sync_channel(4);
-                            let (done, ok, ep_out) = (&dones[j], &oks[j], eps[j].1);
+                            let (done, ep_out) = (&dones[j], eps[j].1);
+                            let ok = std::sync::Arc::new(AtomicBool::new(false));
+                            let sender_ok = ok.clone();
                             s.spawn(move || {
                                 while !done.load(Ordering::Relaxed) {
                                     std::thread::sleep(Duration::from_millis(10));
                                 }
-                                relay::sender(h, ep_out, rrx, ok);
+                                relay::sender(h, ep_out, rrx, &sender_ok);
                             });
+                            let id = dev_id(&h.device());
                             targets.push(Target {
                                 tx: rtx,
                                 dropped: false,
                                 ok,
+                                id,
                             });
                         }
                     }

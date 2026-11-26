@@ -18,6 +18,11 @@ const SHIM_RESET: Duration = Duration::from_millis(3500);
 /// How long to wait for an IDR before (re)starting on any picture: DJI may refresh without IDRs.
 const KEY_WAIT: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
+/// Moonlight restarted on the goggles (no USB change, so we can't tell) scans for the magic again.
+/// So every SYNC_EVERY, before a keyframe (or any picture after twice that), the header also goes
+/// out wrapped as a 16-byte frame: a running shim takes it as one junk frame, a restarted one
+/// finds the magic in it and starts at the picture that follows.
+const SYNC_EVERY: Duration = Duration::from_secs(2);
 
 pub fn header(w: u32, h: u32, fps: u32) -> Vec<u8> {
     [MAGIC, w, h, fps]
@@ -133,6 +138,7 @@ pub fn sender(
     let mut last_sent: Option<Instant> = None;
     let mut resync = true; // must restart at a keyframe (start, after a drop or an error)
     let mut resync_since = Instant::now();
+    let mut last_header = Instant::now();
     for f in rx {
         if f.after_drop && !resync {
             resync = true;
@@ -150,7 +156,9 @@ pub fn sender(
                 continue; // let the shim's watchdog reset it first
             }
         }
-        let data = if resync || sent_format.is_none() {
+        let since = last_header.elapsed();
+        let sync = sent_format.is_some() && since > SYNC_EVERY && (f.key || since > 2 * SYNC_EVERY);
+        let data = if resync || sent_format.is_none() || sync {
             [f.params.as_slice(), &f.data].concat()
         } else {
             f.data
@@ -159,8 +167,13 @@ pub fn sender(
             continue;
         }
         let mut packet = Vec::with_capacity(16 + 4 + data.len());
-        if sent_format.is_none() {
-            packet.extend(header(f.format.0, f.format.1, f.format.2));
+        let hdr = header(f.format.0, f.format.1, f.format.2);
+        if sync {
+            packet.extend((hdr.len() as u32).to_le_bytes());
+        }
+        if sent_format.is_none() || sync {
+            packet.extend(hdr);
+            last_header = Instant::now();
         }
         packet.extend((data.len() as u32).to_le_bytes());
         packet.extend(&data);
