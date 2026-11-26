@@ -9,11 +9,13 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+mod relay;
+
 const VENDOR_ID: u16 = 0x2ca3;
 const PRODUCT_ID: u16 = 0x001f;
 const IFACE: u8 = 3;
 const MAGIC: &[u8] = b"RMVT";
-/// Short: the poke runs on the UI thread, and goggles without a drone link may not take it at all.
+/// Short: goggles without a drone link (or running the relay shim) may not take it at all.
 const POKE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Set by the Ctrl-C/SIGTERM handler. The loops check it so stream() unwinds through its recording flush.
@@ -205,6 +207,7 @@ fn main() -> Res<()> {
         driver_prompted: false,
         recording: false,
         leave: false,
+        sharing: false,
         diagnosing: None,
         screen: Vec::new(),
     };
@@ -291,9 +294,9 @@ impl App {
     /// Live view: find the goggles and stream, retrying, until Esc goes back to the menu.
     fn live(&mut self) {
         while self.watching() {
-            let dev = match find_goggles() {
-                Ok(Some(d)) => d,
-                Ok(None) => {
+            let devs = match find_goggles() {
+                Ok(d) if !d.is_empty() => d,
+                Ok(_) => {
                     self.set_status(
                         "waiting for goggles (use a USB-C to USB-A adapter, not a C-to-C cable)",
                     );
@@ -306,29 +309,37 @@ impl App {
                     continue;
                 }
             };
-            let handle = match open_goggles(&dev) {
-                Ok(h) => h,
-                Err(e) => {
-                    let hint = match e.downcast_ref::<rusb::Error>() {
-                        Some(rusb::Error::Access) => " (permission denied)",
-                        Some(rusb::Error::Busy) => " (in use by another app?)",
-                        _ => "",
-                    };
-                    self.set_status(&format!("found goggles but can't open them: {e}{hint}"));
-                    #[cfg(windows)]
-                    if !std::mem::replace(&mut self.driver_prompted, true) {
-                        offer_driver_install();
-                    }
-                    self.idle(Duration::from_secs(1));
-                    continue;
+            // Open every pair: the one that sends video is the source, the others may be relay targets.
+            let mut handles = Vec::new();
+            let mut open_err = None;
+            for d in &devs {
+                match open_goggles(d) {
+                    Ok(h) => handles.push(h),
+                    Err(e) => open_err = Some(e),
                 }
-            };
+            }
+            if let (true, Some(e)) = (handles.is_empty(), open_err) {
+                let hint = match e.downcast_ref::<rusb::Error>() {
+                    Some(rusb::Error::Access) => " (permission denied)",
+                    Some(rusb::Error::Busy) => " (in use by another app?)",
+                    _ => "",
+                };
+                self.set_status(&format!("found goggles but can't open them: {e}{hint}"));
+                #[cfg(windows)]
+                if !std::mem::replace(&mut self.driver_prompted, true) {
+                    offer_driver_install();
+                }
+                self.idle(Duration::from_secs(1));
+                continue;
+            }
             self.set_status("connected");
-            if let Err(e) = stream(&handle, self) {
+            if let Err(e) = stream(&handles, self) {
                 self.set_status(&format!("stream error: {e}, retrying..."));
                 self.idle(Duration::from_secs(1));
             }
-            let _ = handle.release_interface(IFACE);
+            for h in &handles {
+                let _ = h.release_interface(IFACE);
+            }
         }
     }
 }
@@ -340,6 +351,7 @@ struct App {
     driver_prompted: bool, // Windows: show the Zadig instructions once per run, not every retry
     recording: bool, // wanted by the user; stream() opens/closes the file to match
     leave: bool,     // Esc pressed in the live view: back to the menu
+    sharing: bool,   // pictures are getting through to a second pair of goggles (relay.rs)
     diagnosing: Option<std::thread::JoinHandle<()>>,
     /// The last buffer handed to minifb. On macOS `window.update()` redraws from it, so it must
     /// live as long as the window: a freed menu or video frame there crashed the app (v0.5.0).
@@ -350,8 +362,13 @@ impl App {
     fn set_status(&mut self, status: &str) {
         self.status = status.to_string();
         let rec = if self.recording { " - RECORDING" } else { "" };
+        let share = if self.sharing {
+            " - SHARING TO 2ND GOGGLES"
+        } else {
+            ""
+        };
         self.window.set_title(&format!(
-            "Gimlistream - {status}{rec} - R record, D diagnostics, Esc menu"
+            "Gimlistream - {status}{rec}{share} - R record, D diagnostics, Esc menu"
         ));
     }
 
@@ -396,18 +413,16 @@ impl App {
     }
 }
 
-/// Enumerate USB devices and return the goggles, unopened. Errors here are enumeration
+/// Enumerate USB devices and return every pair of goggles, unopened. Errors here are enumeration
 /// failures; opening is left to the caller so the two can be reported separately.
-fn find_goggles() -> Res<Option<rusb::Device<rusb::GlobalContext>>> {
-    for dev in rusb::devices()?.iter() {
-        let Ok(d) = dev.device_descriptor() else {
-            continue;
-        };
-        if d.vendor_id() == VENDOR_ID && d.product_id() == PRODUCT_ID {
-            return Ok(Some(dev));
-        }
-    }
-    Ok(None)
+fn find_goggles() -> Res<Vec<rusb::Device<rusb::GlobalContext>>> {
+    Ok(rusb::devices()?
+        .iter()
+        .filter(|dev| {
+            dev.device_descriptor()
+                .is_ok_and(|d| d.vendor_id() == VENDOR_ID && d.product_id() == PRODUCT_ID)
+        })
+        .collect())
 }
 
 fn open_goggles(
@@ -707,7 +722,8 @@ fn show_report(text: &str) {
 }
 
 /// Streams video into the window until it closes or the device errors out (e.g. unplugged).
-fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Res<()> {
+/// Bulk (IN, OUT) endpoints of the video interface.
+fn endpoints(handle: &rusb::DeviceHandle<rusb::GlobalContext>) -> Res<(u8, u8)> {
     // Android code uses endpoint 0 as OUT and endpoint 1 as IN on interface 3.
     let cfg = handle.device().active_config_descriptor()?;
     let alt = cfg
@@ -728,8 +744,16 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         .find(|e| e.direction() == rusb::Direction::In)
         .ok_or("no IN ep")?
         .address();
+    Ok((ep_in, ep_out))
+}
 
-    poke(handle, ep_out)?;
+/// Streams from whichever pair of goggles sends video first. With more than one pair connected,
+/// the others get the same pictures through relay.rs (only useful if they run the Moonlight shim).
+fn stream(handles: &[rusb::DeviceHandle<rusb::GlobalContext>], app: &mut App) -> Res<()> {
+    let eps = handles.iter().map(endpoints).collect::<Res<Vec<_>>>()?;
+    for (h, &(_, ep_out)) in handles.iter().zip(&eps) {
+        let _ = poke(h, ep_out); // the readers poke again and report errors
+    }
 
     let mut decoder = Decoder::new()?;
     let mut rgb = Vec::new();
@@ -743,14 +767,44 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     let mut showing = false;
     let mut last_data = std::time::Instant::now();
     let mut err: Option<Box<dyn std::error::Error>> = None;
-    // USB I/O runs on its own thread: libusb calls can block far longer than their timeout
-    // (e.g. while the goggles lose the drone), and the window must keep handling events meanwhile.
-    let stop = AtomicBool::new(false);
+    // Relay to a second pair of goggles: whole pictures, frame rate measured, size from the decoder.
+    struct Target<'a> {
+        tx: std::sync::mpsc::SyncSender<relay::Frame>,
+        dropped: bool,
+        ok: &'a AtomicBool,
+    }
+    let mut targets: Vec<Target> = Vec::new();
+    let mut splitter = relay::AuSplitter::default();
+    let mut fps = relay::FpsMeter::new();
+    let mut dims: Option<(u32, u32)> = None;
+    let mut source: Option<usize> = None;
+    let mut dead = 0; // readers that failed before any pair sent video
+                      // USB I/O runs on its own threads: libusb calls can block far longer than their timeout
+                      // (e.g. while the goggles lose the drone), and the window must keep handling events meanwhile.
+    let new_flags = || {
+        handles
+            .iter()
+            .map(|_| AtomicBool::new(false))
+            .collect::<Vec<_>>()
+    };
+    let (stops, dones, oks) = (new_flags(), new_flags(), new_flags());
     let (tx, rx) = std::sync::mpsc::sync_channel(64);
     std::thread::scope(|s| {
-        s.spawn(|| usb_reader(handle, ep_in, ep_out, &stop, tx));
+        for (i, h) in handles.iter().enumerate() {
+            let (tx, stop, done, (ep_in, ep_out)) = (tx.clone(), &stops[i], &dones[i], eps[i]);
+            s.spawn(move || {
+                usb_reader(h, i, ep_in, ep_out, stop, tx);
+                done.store(true, Ordering::Relaxed);
+            });
+        }
+        drop(tx); // so the channel disconnects once every reader has ended
         while app.watching() {
             app.poll_ui();
+            let sharing = targets.iter().any(|t| t.ok.load(Ordering::Relaxed));
+            if sharing != app.sharing {
+                app.sharing = sharing;
+                app.set_status(&app.status.clone());
+            }
             // Handled before reading so R works even while the stream is stalled.
             if app.recording != rec.is_some() {
                 match rec.take() {
@@ -787,14 +841,45 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
                 }
             }
             match rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(Ok(data)) => {
+                Ok((i, Ok(data))) => {
+                    if source.is_none() {
+                        // The first pair to send video is the source; stop poking the others
+                        // and, once their reader is gone, relay to them.
+                        source = Some(i);
+                        for (j, h) in handles.iter().enumerate().filter(|&(j, _)| j != i) {
+                            stops[j].store(true, Ordering::Relaxed);
+                            let (rtx, rrx) = std::sync::mpsc::sync_channel(4);
+                            let (done, ok, ep_out) = (&dones[j], &oks[j], eps[j].1);
+                            s.spawn(move || {
+                                while !done.load(Ordering::Relaxed) {
+                                    std::thread::sleep(Duration::from_millis(10));
+                                }
+                                relay::sender(h, ep_out, rrx, ok);
+                            });
+                            targets.push(Target {
+                                tx: rtx,
+                                dropped: false,
+                                ok,
+                            });
+                        }
+                    }
+                    if source != Some(i) {
+                        continue; // another pair with its own drone: ignore it
+                    }
                     stream.extend_from_slice(&data);
                     last_data = std::time::Instant::now();
                 }
                 // Don't `return` here: the recording below must still be flushed and reported.
-                Ok(Err(e)) => {
-                    err = Some(e.into());
-                    break;
+                Ok((i, Err(e))) => {
+                    let all_dead = source.is_none() && {
+                        dead += 1;
+                        dead == handles.len()
+                    };
+                    if source == Some(i) || all_dead {
+                        err = Some(e.into());
+                        break;
+                    }
+                    continue; // a relay target or a silent extra pair: not fatal
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     if showing && last_data.elapsed() > Duration::from_secs(1) {
@@ -819,6 +904,32 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
             let complete: Vec<u8> = stream.drain(..cut).collect();
 
             keep_sps_pps(&complete, &mut sps, &mut pps);
+            if !targets.is_empty() {
+                let starts = start_codes(&complete);
+                let mut pictures = Vec::new();
+                for (k, &st) in starts.iter().enumerate() {
+                    let end = starts.get(k + 1).copied().unwrap_or(complete.len());
+                    pictures.extend(splitter.push(&complete[st..end]));
+                }
+                pictures.extend(splitter.peek(&stream)); // `stream` now starts with the next NAL
+                for data in pictures {
+                    let (Some(fps), Some((w, h))) = (fps.tick(), dims) else {
+                        continue;
+                    };
+                    let key = first_idr(&data).is_some();
+                    let params = [sps.as_slice(), &pps].concat();
+                    for t in &mut targets {
+                        let frame = relay::Frame {
+                            data: data.clone(),
+                            key,
+                            params: params.clone(),
+                            after_drop: t.dropped,
+                            format: (w, h, fps),
+                        };
+                        t.dropped = t.tx.try_send(frame).is_err(); // never wait on a slow pair
+                    }
+                }
+            }
             if let Some((f, path)) = &mut rec {
                 // A file must start at a keyframe: skip everything before the first IDR, then prepend SPS/PPS.
                 if let Some(piece) = recording_piece(rec_wait_idr, &sps, &pps, &complete) {
@@ -839,6 +950,7 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
             match decoder.decode(&complete) {
                 Ok(Some(yuv)) => {
                     let (w, h) = yuv.dimensions();
+                    dims = Some((w as u32, h as u32));
                     if w == 0 || h == 0 {
                         app.window.update(); // bogus size from a corrupt SPS; don't feed minifb an empty buffer
                         continue;
@@ -874,9 +986,13 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
                 }
             }
         }
-        stop.store(true, Ordering::Relaxed);
+        for stop in &stops {
+            stop.store(true, Ordering::Relaxed);
+        }
+        targets.clear(); // closes the relay channels, ending the senders
         drop(rx); // unblocks a reader waiting to send, so the scope can join it
     });
+    app.sharing = false;
     if let Some((f, path)) = rec {
         let saved = finish_recording(f, &path);
         // On quit the title outlives the window: don't claim the file just closed is still recording.
@@ -890,14 +1006,16 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
     err.map_or(Ok(()), Err)
 }
 
-/// Reader thread: forwards USB data to the UI thread, poking the goggles whenever they go quiet.
+/// Reader thread: forwards USB data (tagged with the goggles' index `idx`) to the UI thread,
+/// poking the goggles whenever they go quiet.
 /// Ends on `stop`, on a USB error (sent on first), or when the receiver is gone.
 fn usb_reader(
     handle: &rusb::DeviceHandle<rusb::GlobalContext>,
+    idx: usize,
     ep_in: u8,
     ep_out: u8,
     stop: &AtomicBool,
-    tx: std::sync::mpsc::SyncSender<rusb::Result<Vec<u8>>>,
+    tx: std::sync::mpsc::SyncSender<(usize, rusb::Result<Vec<u8>>)>,
 ) {
     let mut chunk = vec![0u8; 131072];
     while !stop.load(Ordering::Relaxed) {
@@ -913,7 +1031,7 @@ fn usb_reader(
             ReadAction::Fail => Err(read.unwrap_err()),
         };
         let failed = msg.is_err();
-        if tx.send(msg).is_err() || failed {
+        if tx.send((idx, msg)).is_err() || failed {
             return;
         }
     }

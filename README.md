@@ -14,6 +14,23 @@ Latest builds: **Actions** tab → newest run → Artifacts. Tagged versions (`v
 
 Recordings are raw H.264 (`.h264`), playable with VLC or IINA.
 
+## Advanced: show the video in a second pair of goggles (Mac/Windows)
+
+Gimlistream can pass the live video on to a second pair of DJI FPV Goggles V1/V2, unchanged
+(no re-encoding, about 1 ms extra delay). The second pair needs custom firmware, so this is
+for tinkerers only; there is no button for it, it switches on by itself:
+
+1. Root the second goggles with [fpv.wtf](https://fpv.wtf) and install WTFOS. On firmware other
+   than 01.00.0606, first downgrade with [butter](https://github.com/fpv-wtf/butter) (Windows/Linux only).
+2. Install the `dji-moonlight-shim` package from the fpv.wtf package manager.
+3. On the second goggles, choose **Moonlight** in the menu.
+4. Connect both goggles to the computer (each with a USB-C to USB-A adapter; on Windows, install
+   WinUSB with Zadig for both) and start **Live view**.
+
+The pair that sends video is shown in the window; every other pair gets the same picture.
+The title bar says "SHARING TO 2ND GOGGLES" once pictures get through. Back on the second
+goggles leaves Moonlight.
+
 ## Build locally (macOS)
 
 ```sh
