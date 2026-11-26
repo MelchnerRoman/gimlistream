@@ -20,8 +20,9 @@ const KEY_WAIT: Duration = Duration::from_secs(2);
 const WRITE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Moonlight restarted on the goggles (no USB change, so we can't tell) scans for the magic again.
 /// So every SYNC_EVERY, before a keyframe (or any picture after twice that), the header also goes
-/// out wrapped as a 16-byte frame: a running shim takes it as one junk frame, a restarted one
-/// finds the magic in it and starts at the picture that follows.
+/// out as its own frame, wrapped in an H.264 filler NAL (`sync_frame`): a running shim hands the
+/// decoder a filler unit it skips, a restarted one finds the magic in it and starts at the picture
+/// that follows. (Bare header bytes as a frame jammed the goggles' hardware decoder.)
 const SYNC_EVERY: Duration = Duration::from_secs(2);
 
 pub fn header(w: u32, h: u32, fps: u32) -> Vec<u8> {
@@ -29,6 +30,12 @@ pub fn header(w: u32, h: u32, fps: u32) -> Vec<u8> {
         .iter()
         .flat_map(|v| v.to_le_bytes())
         .collect()
+}
+
+/// Length-prefixed frame holding just a filler NAL (type 12) whose payload is `header`.
+fn sync_frame(header: &[u8]) -> Vec<u8> {
+    let nal = [&[0, 0, 1, 12][..], header].concat();
+    [&(nal.len() as u32).to_le_bytes()[..], &nal].concat()
 }
 
 fn nal_type(nal: &[u8]) -> Option<u8> {
@@ -166,12 +173,12 @@ pub fn sender(
         if data.len() > MAX_FRAME {
             continue;
         }
-        let mut packet = Vec::with_capacity(16 + 4 + data.len());
+        let mut packet = Vec::with_capacity(24 + 4 + data.len());
         let hdr = header(f.format.0, f.format.1, f.format.2);
         if sync {
-            packet.extend((hdr.len() as u32).to_le_bytes());
-        }
-        if sent_format.is_none() || sync {
+            packet.extend(sync_frame(&hdr));
+            last_header = Instant::now();
+        } else if sent_format.is_none() {
             packet.extend(hdr);
             last_header = Instant::now();
         }
@@ -205,6 +212,23 @@ mod tests {
         assert_eq!(
             header(1280, 720, 60),
             [0x69, 0x20, 0x04, 0, 0x00, 0x05, 0, 0, 0xd0, 0x02, 0, 0, 60, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn sync_frame_is_a_filler_nal_holding_the_header() {
+        let hdr = header(1440, 810, 120);
+        let f = sync_frame(&hdr);
+        assert_eq!(
+            &f[..4],
+            &20u32.to_le_bytes(),
+            "length prefix: start code + type + header"
+        );
+        assert_eq!(&f[4..8], &[0, 0, 1, 12]);
+        assert_eq!(&f[8..], &hdr[..]);
+        assert!(
+            !f[8..].windows(3).any(|w| w == [0, 0, 1]),
+            "no start code inside the filler"
         );
     }
 
