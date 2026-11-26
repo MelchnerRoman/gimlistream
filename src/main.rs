@@ -13,6 +13,8 @@ const VENDOR_ID: u16 = 0x2ca3;
 const PRODUCT_ID: u16 = 0x001f;
 const IFACE: u8 = 3;
 const MAGIC: &[u8] = b"RMVT";
+/// Short: the poke runs on the UI thread, and goggles without a drone link may not take it at all.
+const POKE_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// Set by the Ctrl-C/SIGTERM handler. The loops check it so stream() unwinds through its recording flush.
 static QUIT: AtomicBool = AtomicBool::new(false);
@@ -145,18 +147,15 @@ fn keep_sps_pps(buf: &[u8], sps: &mut Vec<u8>, pps: &mut Vec<u8>) {
 
 /// Offset of the start code of the first IDR slice (NAL type 5) in `buf`.
 fn first_idr(buf: &[u8]) -> Option<usize> {
-    start_codes(buf).into_iter().find(|&s| buf.get(s + 3).is_some_and(|t| t & 0x1f == 5))
+    start_codes(buf)
+        .into_iter()
+        .find(|&s| buf.get(s + 3).is_some_and(|t| t & 0x1f == 5))
 }
 
 /// Bytes to write for one complete-NAL chunk, or `None` while still waiting for the first IDR.
 /// A file must start at a keyframe: drop everything before the first IDR and prepend the latest
 /// SPS/PPS so the file is decodable. Once the keyframe has been written, write chunks whole.
-fn recording_piece(
-    waiting_idr: bool,
-    sps: &[u8],
-    pps: &[u8],
-    complete: &[u8],
-) -> Option<Vec<u8>> {
+fn recording_piece(waiting_idr: bool, sps: &[u8], pps: &[u8], complete: &[u8]) -> Option<Vec<u8>> {
     if !waiting_idr {
         return Some(complete.to_vec());
     }
@@ -730,136 +729,154 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         .ok_or("no IN ep")?
         .address();
 
-    handle.write_bulk(ep_out, MAGIC, Duration::from_secs(2))?;
+    poke(handle, ep_out)?;
 
     let mut decoder = Decoder::new()?;
     let mut rgb = Vec::new();
-    let mut chunk = vec![0u8; 131072];
     let mut stream: Vec<u8> = Vec::new();
     // Raw H.264 recording. SPS/PPS are kept so a file started mid-stream is still playable.
     let mut rec: Option<(std::io::BufWriter<std::fs::File>, PathBuf)> = None;
     let (mut sps, mut pps) = (Vec::new(), Vec::new());
     let mut rec_wait_idr = false; // recording is open but still waiting for its first keyframe
 
-    app.set_status("streaming");
+    app.set_status("connected, waiting for video (turn on the drone)");
+    let mut showing = false;
+    let mut last_data = std::time::Instant::now();
     let mut err: Option<Box<dyn std::error::Error>> = None;
-    while app.watching() {
-        app.poll_ui();
-        // Handled before reading so R works even while the stream is stalled.
-        if app.recording != rec.is_some() {
-            match rec.take() {
-                Some((f, path)) => app.set_status(&finish_recording(f, &path)),
-                None => {
-                    let mut path = recording_path();
-                    let open = |p: &PathBuf| {
-                        std::fs::OpenOptions::new().write(true).create_new(true).open(p)
-                    };
-                    let mut res = open(&path);
-                    if matches!(&res, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
-                        path = recording_path(); // taken since exists(); retry once
-                        res = open(&path);
-                    }
-                    match res {
-                        Ok(f) => {
-                            let f = std::io::BufWriter::new(f);
-                            rec_wait_idr = true;
-                            app.set_status(&format!(
-                                "recording to {} (waiting for keyframe)",
-                                path.display()
-                            ));
-                            rec = Some((f, path));
+    // USB I/O runs on its own thread: libusb calls can block far longer than their timeout
+    // (e.g. while the goggles lose the drone), and the window must keep handling events meanwhile.
+    let stop = AtomicBool::new(false);
+    let (tx, rx) = std::sync::mpsc::sync_channel(64);
+    std::thread::scope(|s| {
+        s.spawn(|| usb_reader(handle, ep_in, ep_out, &stop, tx));
+        while app.watching() {
+            app.poll_ui();
+            // Handled before reading so R works even while the stream is stalled.
+            if app.recording != rec.is_some() {
+                match rec.take() {
+                    Some((f, path)) => app.set_status(&finish_recording(f, &path)),
+                    None => {
+                        let mut path = recording_path();
+                        let open = |p: &PathBuf| {
+                            std::fs::OpenOptions::new()
+                                .write(true)
+                                .create_new(true)
+                                .open(p)
+                        };
+                        let mut res = open(&path);
+                        if matches!(&res, Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists) {
+                            path = recording_path(); // taken since exists(); retry once
+                            res = open(&path);
                         }
-                        Err(e) => {
-                            app.recording = false;
-                            app.set_status(&format!("can't record to {}: {e}", path.display()));
+                        match res {
+                            Ok(f) => {
+                                let f = std::io::BufWriter::new(f);
+                                rec_wait_idr = true;
+                                app.set_status(&format!(
+                                    "recording to {} (waiting for keyframe)",
+                                    path.display()
+                                ));
+                                rec = Some((f, path));
+                            }
+                            Err(e) => {
+                                app.recording = false;
+                                app.set_status(&format!("can't record to {}: {e}", path.display()));
+                            }
                         }
                     }
                 }
             }
-        }
-        let read = handle.read_bulk(ep_in, &mut chunk, Duration::from_millis(100));
-        match read_action(&read) {
-            ReadAction::Data(n) => stream.extend_from_slice(&chunk[..n]),
-            ReadAction::Poke => {
-                // Goggles stop streaming until poked again.
-                if let Err(e) = handle.write_bulk(ep_out, MAGIC, Duration::from_secs(2)) {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(Ok(data)) => {
+                    stream.extend_from_slice(&data);
+                    last_data = std::time::Instant::now();
+                }
+                // Don't `return` here: the recording below must still be flushed and reported.
+                Ok(Err(e)) => {
                     err = Some(e.into());
                     break;
                 }
-                app.window.update();
-                continue;
-            }
-            ReadAction::Retry => {
-                app.window.update();
-                continue;
-            }
-            // Don't `return` here: the recording below must still be flushed and reported.
-            ReadAction::Fail => {
-                err = read.err().map(Into::into);
-                break;
-            }
-        }
-
-        let Some(cut) = last_start_code(&stream).filter(|&c| c > 0) else {
-            cap_stream(&mut stream);
-            app.window.update();
-            continue;
-        };
-        let complete: Vec<u8> = stream.drain(..cut).collect();
-
-        keep_sps_pps(&complete, &mut sps, &mut pps);
-        if let Some((f, path)) = &mut rec {
-            // A file must start at a keyframe: skip everything before the first IDR, then prepend SPS/PPS.
-            if let Some(piece) = recording_piece(rec_wait_idr, &sps, &pps, &complete) {
-                let waiting = rec_wait_idr;
-                let written = f.write_all(&piece);
-                if written.is_ok() && waiting {
-                    rec_wait_idr = false;
-                    app.set_status(&format!("recording to {}", path.display()));
-                }
-                if let Err(e) = written {
-                    let msg = format!("recording to {} stopped: {e}", path.display());
-                    rec = None;
-                    app.recording = false;
-                    app.set_status(&msg);
-                }
-            }
-        }
-        match decoder.decode(&complete) {
-            Ok(Some(yuv)) => {
-                let (w, h) = yuv.dimensions();
-                if w == 0 || h == 0 {
-                    app.window.update(); // bogus size from a corrupt SPS; don't feed minifb an empty buffer
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if showing && last_data.elapsed() > Duration::from_secs(1) {
+                        showing = false; // say "streaming" again once video is back
+                        if rec.is_none() {
+                            app.set_status(
+                                "no video, waiting for the drone (powered off or out of range?)",
+                            );
+                        }
+                    }
+                    app.window.update();
                     continue;
                 }
-                rgb.resize(w * h * 3, 0);
-                yuv.write_rgb8(&mut rgb);
-                // Refill in place and hand it to minifb right away: a reallocation frees the old buffer.
-                let frame = &mut app.screen;
-                frame.clear();
-                frame.extend(
-                    rgb.as_chunks::<3>()
-                        .0
-                        .iter()
-                        .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]])),
-                );
-                draw_watermark(frame, w, h);
-                if rec.is_some() {
-                    draw_rec_dot(frame, w, h);
-                }
-                // Don't `?`: the recording must still be flushed and reported.
-                if let Err(e) = app.window.update_with_buffer(&app.screen, w, h) {
-                    err = Some(e.into());
-                    break;
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+
+            let Some(cut) = last_start_code(&stream).filter(|&c| c > 0) else {
+                cap_stream(&mut stream);
+                app.window.update();
+                continue;
+            };
+            let complete: Vec<u8> = stream.drain(..cut).collect();
+
+            keep_sps_pps(&complete, &mut sps, &mut pps);
+            if let Some((f, path)) = &mut rec {
+                // A file must start at a keyframe: skip everything before the first IDR, then prepend SPS/PPS.
+                if let Some(piece) = recording_piece(rec_wait_idr, &sps, &pps, &complete) {
+                    let waiting = rec_wait_idr;
+                    let written = f.write_all(&piece);
+                    if written.is_ok() && waiting {
+                        rec_wait_idr = false;
+                        app.set_status(&format!("recording to {}", path.display()));
+                    }
+                    if let Err(e) = written {
+                        let msg = format!("recording to {} stopped: {e}", path.display());
+                        rec = None;
+                        app.recording = false;
+                        app.set_status(&msg);
+                    }
                 }
             }
-            Ok(None) => app.window.update(),
-            Err(e) => {
-                eprintln!("decode: {e}"); // corrupt NAL over the air link; keep going
-                app.window.update();
+            match decoder.decode(&complete) {
+                Ok(Some(yuv)) => {
+                    let (w, h) = yuv.dimensions();
+                    if w == 0 || h == 0 {
+                        app.window.update(); // bogus size from a corrupt SPS; don't feed minifb an empty buffer
+                        continue;
+                    }
+                    rgb.resize(w * h * 3, 0);
+                    yuv.write_rgb8(&mut rgb);
+                    // Refill in place and hand it to minifb right away: a reallocation frees the old buffer.
+                    let frame = &mut app.screen;
+                    frame.clear();
+                    frame.extend(
+                        rgb.as_chunks::<3>()
+                            .0
+                            .iter()
+                            .map(|p| u32::from_be_bytes([0, p[0], p[1], p[2]])),
+                    );
+                    draw_watermark(frame, w, h);
+                    if rec.is_some() {
+                        draw_rec_dot(frame, w, h);
+                    }
+                    // Don't `?`: the recording must still be flushed and reported.
+                    if let Err(e) = app.window.update_with_buffer(&app.screen, w, h) {
+                        err = Some(e.into());
+                        break;
+                    }
+                    if !std::mem::replace(&mut showing, true) && rec.is_none() {
+                        app.set_status("streaming");
+                    }
+                }
+                Ok(None) => app.window.update(),
+                Err(e) => {
+                    eprintln!("decode: {e}"); // corrupt NAL over the air link; keep going
+                    app.window.update();
+                }
             }
         }
-    }
+        stop.store(true, Ordering::Relaxed);
+        drop(rx); // unblocks a reader waiting to send, so the scope can join it
+    });
     if let Some((f, path)) = rec {
         let saved = finish_recording(f, &path);
         // On quit the title outlives the window: don't claim the file just closed is still recording.
@@ -871,6 +888,43 @@ fn stream(handle: &rusb::DeviceHandle<rusb::GlobalContext>, app: &mut App) -> Re
         err = err.map(|e| format!("{e} ({saved})").into());
     }
     err.map_or(Ok(()), Err)
+}
+
+/// Reader thread: forwards USB data to the UI thread, poking the goggles whenever they go quiet.
+/// Ends on `stop`, on a USB error (sent on first), or when the receiver is gone.
+fn usb_reader(
+    handle: &rusb::DeviceHandle<rusb::GlobalContext>,
+    ep_in: u8,
+    ep_out: u8,
+    stop: &AtomicBool,
+    tx: std::sync::mpsc::SyncSender<rusb::Result<Vec<u8>>>,
+) {
+    let mut chunk = vec![0u8; 131072];
+    while !stop.load(Ordering::Relaxed) {
+        let read = handle.read_bulk(ep_in, &mut chunk, Duration::from_millis(100));
+        let msg = match read_action(&read) {
+            ReadAction::Data(n) => Ok(chunk[..n].to_vec()),
+            // Goggles stop streaming until poked again.
+            ReadAction::Poke => match poke(handle, ep_out) {
+                Ok(()) => continue,
+                Err(e) => Err(e),
+            },
+            ReadAction::Retry => continue,
+            ReadAction::Fail => Err(read.unwrap_err()),
+        };
+        let failed = msg.is_err();
+        if tx.send(msg).is_err() || failed {
+            return;
+        }
+    }
+}
+
+/// Asks the goggles to (re)start streaming. A timeout isn't an error: the next empty read pokes again.
+fn poke(handle: &rusb::DeviceHandle<rusb::GlobalContext>, ep_out: u8) -> rusb::Result<()> {
+    match handle.write_bulk(ep_out, MAGIC, POKE_TIMEOUT) {
+        Ok(_) | Err(rusb::Error::Timeout) => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Flushes the recording; only claims "saved" if the last buffered bytes really hit the disk
@@ -1103,10 +1157,26 @@ mod tests {
 
     #[test]
     fn menu_button_edges() {
-        assert_eq!(super::menu_button(80.0, 500.0), Some(0), "top-left inclusive");
-        assert_eq!(super::menu_button(280.0, 550.0), None, "right edge exclusive");
-        assert_eq!(super::menu_button(1000.0, 600.0), None, "bottom edge exclusive");
-        assert_eq!(super::menu_button(1200.0, 550.0), None, "right of last button");
+        assert_eq!(
+            super::menu_button(80.0, 500.0),
+            Some(0),
+            "top-left inclusive"
+        );
+        assert_eq!(
+            super::menu_button(280.0, 550.0),
+            None,
+            "right edge exclusive"
+        );
+        assert_eq!(
+            super::menu_button(1000.0, 600.0),
+            None,
+            "bottom edge exclusive"
+        );
+        assert_eq!(
+            super::menu_button(1200.0, 550.0),
+            None,
+            "right of last button"
+        );
     }
 
     #[test]
